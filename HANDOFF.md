@@ -362,3 +362,121 @@ step: open a PR adding `examples/salt/` (mirroring this repo's own
 `examples/openai_agents_approval.py`) with a short README, following the
 same generic contribution flow as any other PR to that repo — there's
 nothing more specific documented to follow.
+
+---
+
+## Lane `py-align` (2026-09-18) — socket contract revision, ask/approve M2 fix, custody doc fix, 0.1.1
+
+Ran directly on `main` (fast-forwarded from `integrations`, no worktree),
+per that lane's own instructions: this pass is explicitly allowed to bump
+this repo's own version and edit `CHANGELOG.md`, unlike the general
+`LANES.md` rule for build lanes. Spec:
+`design-fleet/runs/2026-09-17-distribution/LANES.md`'s "Socket mode
+contract" section (revised 2026-09-18 after a security review — see that
+file's H1/M5/F3 notes) and the reference implementation at
+`.worktrees/socket/salt-agent-sdk/src/{socket,ask}.ts`.
+
+### What changed
+
+- **`saltapp.socket`**: rewritten to match the revised contract.
+  `SOCKET_SIGNATURE_TOLERANCE_SECONDS` (retention + 1h) replaces the
+  webhook path's 300s default; `SocketClient.run()` polls adaptively
+  (`ACTIVE_POLL_DELAY_SECONDS`=1, ramping to `IDLE_POLL_DELAY_SECONDS`=5);
+  `poll_once()` now halts (never advances the cursor) on a transient
+  verification failure (no signing secret available, or the lookup
+  raised) and retries with backoff, while a DEFINITIVE rejection (bad
+  signature, malformed header, genuinely-stale timestamp) still advances
+  past it. Added `DedupeStore`/`MemoryDedupeStore`/`FileDedupeStore`
+  (bounded to 5,000 ids) for delivery-id replay protection, since the wide
+  tolerance means the timestamp alone can't do that job anymore. Added
+  `default_state_dir(agent_id)` — the default cursor/dedupe stores are now
+  `FileCursorStore`/`FileDedupeStore` under `~/.salt/agents/<agent_id>/`
+  (dirs chmod 0700, files chmod 0600 via atomic temp+rename writes) rather
+  than in-memory; `MemoryCursorStore`/`MemoryDedupeStore` are still there
+  for an explicit opt-out (every test passes them explicitly — verified by
+  running the full suite and confirming `~/.salt` is never created).
+- **`saltapp.client`**: `get_agent_updates`'s `timeout` default is now 2
+  (was 25), matching the server's own clamp.
+- **`saltapp.agent`**: `run_socket`/`run_socket_async` gained a
+  `dedupe_store` parameter, default `poll_timeout` is now 2, and socket
+  mode always verifies at `SOCKET_SIGNATURE_TOLERANCE_SECONDS` (decoupled
+  from `Agent(signature_tolerance_seconds=...)`, which still governs only
+  the webhook/ASGI path's 300s default). `ask()`/`approve()` (M2 parity
+  with `ask.ts`): every ask now names one expected answerer
+  (`from_user_id`, defaulting to `MessageContext`'s sender /
+  `ChatOpenedContext`'s opener / `InvoicePaidContext`'s buyer, each only
+  when that party isn't itself an agent), posts `restricted_to:
+  [answerer]` on every button, and `_AskRegistry` ignores any tap/reply
+  from an agent or from anyone else. **One deliberate, documented
+  divergence from `ask.ts`**: a bare `tool_context()` (used by every
+  `saltapp.integrations.<framework>` tool, which has no live triggering
+  message behind it) has no natural default answerer, so `ask()` there
+  falls back to the old permissive "anyone non-agent may answer" behavior
+  instead of raising synchronously — pass `from_user_id` explicitly there
+  if you need the restriction. No explicit (identity, chat) key was added
+  to `_AskRegistry` — `saltapp.agent.Agent` hosts exactly one identity per
+  instance (a pre-existing, documented scope decision) and the registry is
+  a per-`Agent` attribute, so the identity dimension is already the
+  instance boundary. `approve()`'s typed-reply match is now the exact
+  `^(y|yes)[.!]?$` (case-insensitive); a tapped button still matches by
+  its own label.
+- **Custody docs**: README's registration quickstart no longer sends
+  `private_key` to `create_agent(...)` (only `public_key` +
+  `public_fingerprint` cross the wire); documented rotating a lost private
+  key via `POST /api/v1/settings/keys` with the agent's own api-key (no
+  typed client wrapper added — flagged as a possible future addition in
+  AGENTS.md). README's socket-mode example and every `examples/*.py` file
+  dropped the old explicit `FileCursorStore("./data/..._cursor.txt")` in
+  favor of the new file-backed-by-default behavior.
+- **0.1.1**: `pyproject.toml` + `src/saltapp/__init__.py.__version__`
+  bumped; `CHANGELOG.md` added (0.1.0 + 0.1.1 entries).
+- **`.github/workflows/ci.yml`** added, alongside the existing
+  `publish.yml`: a `test` job matrixed over Python 3.10–3.13 (core suite
+  only — no integration extras installed, so every `tests/integrations/*`
+  file cleanly self-skips via `pytest.importorskip`), an `integration` job
+  with one matrix cell PER framework extra (never combined — crewai pins
+  `openai<3`, `openai-agents` pins `openai>=3`), rotating across
+  3.10–3.13 so the whole supported range gets exercised, and a `build`
+  job running `python -m build` + `twine check`.
+
+### How to test
+
+```bash
+cd saltapp-python && source .venv/bin/activate   # venv already has every
+                                                   # framework installed
+pytest -q            # 126 passed (117 pre-existing + 9 new in test_socket.py)
+python -m build
+python -m twine check dist/*
+```
+
+`tests/test_socket.py` was substantially rewritten: every `SocketClient(...)`
+construction now passes explicit `agent_id` + `MemoryCursorStore()`/
+`MemoryDedupeStore()` (never the real home directory); the old
+stale-envelope test's skew was widened past the new tolerance to keep
+testing the same thing; new tests cover the transient-halt behavior,
+delivery-id dedupe, adaptive polling, and the file-store round trip
+(against `tmp_path`, with `Path.home` monkeypatched for the
+default-store test). `tests/test_ask.py` and all 36
+`tests/integrations/*` tests needed **zero changes** — the M2 fix's
+backward-compatible defaults (an unnamed answerer keeps the old
+permissive behavior; `try_resolve_message`'s `sender_is_agent` defaults
+to `False`) meant every existing call site kept working.
+
+### What's left
+
+- No typed `SaltClient.rotate_keys(...)` wrapper for
+  `POST /api/v1/settings/keys` — documented as a direct call in the
+  README; add one if this comes up again.
+- No live salt-api smoke test of the new socket behavior (halting on a
+  transient failure, adaptive polling, file-backed stores under a real
+  `~/.salt`) — everything above is covered by `httpx.MockTransport` tests
+  only, same pre-existing gap the `python`/`integrations` lanes both
+  flagged for the rest of the SDK.
+- `saltapp.integrations.*`'s `ask_human` tool still has no way to name an
+  explicit answerer from a framework's own call site (no `from_user_id`/
+  `answerer_id` parameter threaded through `SaltTools`/
+  `build_plain_functions`) — every framework integration keeps the old
+  permissive "anyone non-agent in the chat may answer" behavior for now;
+  threading an explicit answerer through all nine integration modules was
+  judged out of scope for this pass (large blast radius, no test coverage
+  gap it would close) but is the natural next step if a caller needs it.

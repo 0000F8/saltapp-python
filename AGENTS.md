@@ -28,7 +28,7 @@ assumes you've read that.
 | `saltapp.cards` | `card.rb`'s validator (salt-api) + `actions.ts`'s card builder comments | Block builders: `section`/`field`/`divider`/`image`/`button`/`pay_button`/`handoff_button`/`actions`/`blocks`, with the same limits (`MAX_BLOCKS` etc.) as the server validator. |
 | `saltapp.client` | `client.ts` + `salt_client.py` | `SaltClient` (sync) / `AsyncSaltClient` (async): messages, chats, cards, payment requests, invoices, products, usage, hand-offs. |
 | `saltapp.webhook` | `webhook.ts`'s signature check + `webhook_auth.py` | `verify_signature`, `handle()` (framework-neutral), `create_asgi_app` (zero-dependency ASGI). |
-| `saltapp.socket` | New (K2 contract in `design-fleet/runs/2026-09-17-distribution/LANES.md`) | `SocketClient`: long-polls `GET /api/v1/agent/updates`, verifies every envelope the same way a webhook is verified, backs off on transport errors. |
+| `saltapp.socket` | K2 contract in `design-fleet/runs/2026-09-17-distribution/LANES.md`, revised 2026-09-18 after a security review | `SocketClient`: short-polls `GET /api/v1/agent/updates` adaptively (1s after activity, backing off to 5s idle -- Action Cable is the real push path, this is the fallback), verifies every envelope at a wide tolerance (retention + 1h) since an outbox row can sit unpolled for days, dedupes on delivery_id (persistent, file-backed by default), halts (never advances the cursor) on a transient verification failure, backs off on transport errors. |
 | `saltapp.agent` | `webhook.ts`'s dispatch logic (mention rule, loop guard, GACM, dedupe) + this SDK's own `ask()`/`approve()` | `Agent`: decorators, dispatch, `run_socket()`, `asgi_app()`. |
 | `saltapp.integrations.fastapi` / `.flask` | New | Thin adapters mounting `Agent` into an app you already have. |
 | `saltapp.integrations._tools` | New | `SaltTools`: the six shared actions (`send_message`/`ask_human`/`request_payment`/`send_invoice`/`post_card`/`get_payment_status`) every framework integration below wraps -- one place the business logic and the `ask_human` HITL primitive live. |
@@ -88,10 +88,35 @@ revisit this file's note if that lands.
 Concurrency note: `ask()`'s wait is implemented with a `threading.Event`
 awaited via `asyncio.to_thread`, specifically so it does not block the
 event loop `Agent.run_socket_async()`/`asgi_app()` run on -- the socket
-poller keeps long-polling (and can deliver the very update that resolves
-the ask) while a handler is suspended inside `ctx.ask()`. `SocketClient.run()`
+poller keeps polling (and can deliver the very update that resolves the
+ask) while a handler is suspended inside `ctx.ask()`. `SocketClient.run()`
 schedules each event's dispatch as its own `asyncio.create_task`, not an
 inline `await`, for the same reason.
+
+**M2 parity fix (security review, 2026-09-18)**: `ask()`/`approve()` now
+name ONE expected answerer (`from_user_id`, defaulting to whoever
+triggered the context -- `MessageContext`'s sender, `ChatOpenedContext`'s
+opener, `InvoicePaidContext`'s buyer, each only when that party isn't
+itself an agent), post `restricted_to: [answerer]` on every button
+(enforced server-side too, `cards_controller#actions`/`Card#find_button`),
+and `_AskRegistry` ignores any tap/reply from an agent outright plus any
+reply from someone other than the named answerer. This mirrors
+salt-agent-sdk's `ask.ts` M2 fix with one deliberate simplification: that
+SDK keys a pending ask by (identity, chat) because its `IdentityStore` can
+host several identities sharing one process/registry; `saltapp.agent.Agent`
+hosts exactly one identity per instance and `_AskRegistry` is a per-`Agent`
+attribute (see "One identity per `Agent`" above), so the identity
+dimension is already the instance boundary -- adding it to the key would
+just repeat information that boundary already carries. One real,
+documented divergence: `saltapp.integrations.*`'s bare `tool_context()`
+(no live triggering message behind it) has no natural default answerer,
+so `ask()` there falls back to its old permissive behavior (any non-agent
+member may answer) rather than raising synchronously the way `ask.ts`
+does -- pass `from_user_id` explicitly through that path if you need the
+restriction there too. `approve()`'s typed-reply match is now the exact
+`^(y|yes)[.!]?$` (case-insensitive) -- "yeah"/"yes please" no longer
+count; a tapped "Yes" button still matches by its own label, not this
+regex.
 
 ## Framework integrations (`saltapp.integrations.<framework>`)
 
@@ -143,18 +168,18 @@ before trusting one.
   worked around by installing the last version with a prebuilt wheel
   (`google-re2==1.1.20240702` from a `--only-binary` download) before
   `pip install crewai`. See `HANDOFF.md` for the exact commands.
-- **`saltapp.socket`/`saltapp.agent.run_socket_async()` still use the OLD
-  socket-mode contract** (`poll_timeout=25` default, matching the K2
-  contract as it stood when the core SDK (lane `python`) was built).
-  `design-fleet/runs/2026-09-17-distribution/LANES.md` was revised
-  2026-09-18 (after this integrations lane started) to a short-poll
-  contract: `timeout` clamped server-side to 0..2s, Action Cable as the
-  primary push path, polling only as backlog catch-up. This still WORKS
-  (the server just clamps the requested 25s down to its real ceiling), but
-  every example in `examples/` and the README's socket-mode snippets
-  should move to the revised contract's adaptive-polling shape once the
-  `socket` lane's SDK-side change lands -- don't take `poll_timeout=25` in
-  this repo as the current recommendation.
+- **`saltapp.socket`/`saltapp.agent.run_socket_async()` now match the
+  REVISED socket-mode contract** (lane `py-align`, 2026-09-18, folding in
+  the `socket` lane's security review): `timeout` defaults to 2 (the
+  server clamps it to 0..2 regardless), polling is adaptive (1s after
+  activity, backing off to 5s idle), verification tolerance is
+  `SOCKET_SIGNATURE_TOLERANCE_SECONDS` (retention + 1h, not the webhook
+  path's 300s), a transient verification failure halts without advancing
+  the cursor, and the default cursor/dedupe stores are file-based under
+  `~/.salt/agents/<agent_id>/` (0700 dirs, 0600 files) rather than
+  in-memory. Every `examples/*.py` file and the README were updated to
+  drop the old explicit `FileCursorStore("./data/..._cursor.txt")` in
+  favor of the new default.
 
 ## The webhook-signature test vector
 
@@ -241,22 +266,17 @@ not all nine at once) before running these.
   and a running `salt-api`. Before calling any one integration
   production-ready, run its example by hand per the "UAT steps" in
   `HANDOFF.md`.
-- **The socket-mode contract examples/README use is one revision behind**
-  -- see this file's "Framework integrations" section's last bullet.
-  `saltapp.socket`/`Agent.run_socket_async()` themselves are untouched by
-  this lane (out of scope: that's the `socket` lane's SDK-side code to
-  revise), but every `examples/*.py` file and the README's socket-mode
-  snippets should move to the revised adaptive-polling shape once that
-  lane's change lands here.
-- **`README.md`'s "Custody" quickstart still shows `create_agent(...,
-  {"private_key": keys.private_key, ...})`** -- flagged in
-  `design-fleet/runs/2026-09-17-distribution/FOLLOWUPS.md` ("READMEs that
-  still describe server-held keys") by the separate `custody` lane, which
-  is changing salt-api to refuse a private key over the wire at all. This
-  integrations lane did NOT touch that section: the exact new
-  registration contract depends on the custody lane's still-in-progress
-  server change, which wasn't available to verify against. Whoever lands
-  the custody lane's change should update that quickstart in the same
-  pass (and note it doesn't affect anything in `saltapp.integrations.*` --
-  every integration and example here builds an `Agent` from
-  already-issued credentials, never calls `create_agent`).
+- **Resolved (lane `py-align`, 2026-09-18)**: the socket-mode contract and
+  the README's "Custody" quickstart (which used to show `create_agent(...,
+  {"private_key": keys.private_key, ...})`) are both now current -- see
+  the "Framework integrations" section above and the README's Custody /
+  Quickstart sections. `create_agent` sends only `public_key` +
+  `public_fingerprint`; the private key never crosses the wire. Rotating a
+  lost private key is `POST /api/v1/settings/keys` with the agent's own
+  api-key (no wrapper method yet -- call it directly), documented in the
+  README next to `rotate_api_key`.
+- **No client-side wrapper for `POST /api/v1/settings/keys`** (PGP key
+  rotation) yet -- the README documents calling it directly. Add a typed
+  `SaltClient.rotate_keys(api_key, public_key)` if this comes up again;
+  it wasn't added here to keep this pass's blast radius to what the task
+  actually needed.

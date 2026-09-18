@@ -1,0 +1,105 @@
+# Runs the core test suite across every supported Python version, then
+# each framework integration extra in its OWN job -- crewai pins
+# `openai<3` and the `openai-agents` package pins `openai>=3`, a real
+# conflict between two frameworks' own dependencies (see AGENTS.md
+# "Known conflicts"), so no single job/venv can install all nine at once.
+# Every `tests/integrations/*.py` file `pytest.importorskip`s its
+# framework, so a job that only installs ONE extra still runs the full
+# core suite plus just that one integration's tests -- the rest skip
+# cleanly rather than failing.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install saltapp (core + fastapi/flask adapters)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[fastapi,flask]"
+          pip install pytest pytest-asyncio
+
+      - name: pytest
+        run: pytest -q
+
+  integration:
+    name: pytest [${{ matrix.extra }}] (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # One job per framework extra -- never combined in a single resolve
+      # (see this file's header comment). The python-version per extra
+      # rotates through the full 3.10-3.13 support range rather than
+      # cross-multiplying every extra by every version, which would just
+      # multiply the same known cross-framework conflicts by four.
+      matrix:
+        include:
+          - extra: langchain
+            python-version: "3.10"
+          - extra: crewai
+            python-version: "3.11"
+          - extra: pydantic_ai
+            python-version: "3.12"
+          - extra: agno
+            python-version: "3.13"
+          - extra: adk
+            python-version: "3.10"
+          - extra: openai_agents
+            python-version: "3.11"
+          - extra: smolagents
+            python-version: "3.12"
+          - extra: llamaindex
+            python-version: "3.13"
+          - extra: camel
+            python-version: "3.10"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install saltapp[${{ matrix.extra }}]
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-asyncio
+          pip install -e ".[${{ matrix.extra }}]"
+
+      - name: pytest
+        run: pytest -q
+
+  build:
+    name: build + twine check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build twine
+
+      - name: Build sdist + wheel
+        run: python -m build
+
+      - name: twine check
+        run: python -m twine check dist/*

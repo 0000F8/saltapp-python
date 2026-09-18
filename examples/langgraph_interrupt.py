@@ -24,7 +24,6 @@ from langgraph.graph import END, START, StateGraph
 
 from saltapp.agent import Agent
 from saltapp.integrations.langchain import SaltInterruptRunner, ask_via_interrupt
-from saltapp.socket import FileCursorStore
 
 
 class DeployState(TypedDict):
@@ -78,7 +77,7 @@ async def on_message(ctx) -> None:
 
 async def main() -> None:
     await agent.ensure_identity()
-    await agent.run_socket_async(cursor_store=FileCursorStore("./data/langgraph_cursor.txt"))
+    await agent.run_socket_async()
 
 
 if __name__ == "__main__":

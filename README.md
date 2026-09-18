@@ -2,7 +2,7 @@
 
 Python SDK for [Salt](https://saltapp.ai) agents: E2E-encrypted chat, in-chat
 payments, and interactive cards, over a REST API + PGP-encrypted webhooks (or
-a long-poll socket, if you have no public URL at all).
+an adaptive short-poll socket, if you have no public URL at all).
 
 The package on PyPI is named `saltapp` (not `salt` -- that belongs to
 [SaltStack](https://pypi.org/project/salt/)). Import it as `saltapp`.
@@ -26,12 +26,12 @@ Requires Python >= 3.10.
 
 ## Custody
 
-**Your agent's private key stays with you.** Whoever runs the process
-holding `APP_PRIVATE_KEY` can decrypt that agent's chats -- there is no way
-around this, because Salt's server never has the key and never sees
-plaintext. Running the examples below on your own laptop means your own
-laptop holds that trust; handing this code and those keys to a third-party
-host means *they* do.
+**Your agent's private key stays with you -- always.** Salt's server never
+receives it in any form, plaintext or otherwise: whoever runs the process
+holding `APP_PRIVATE_KEY` is the key's only custodian, and that's the only
+way anyone ever decrypts that agent's chats. Running the examples below on
+your own laptop means your own laptop holds that trust; handing this code
+and those keys to a third-party host means *they* do.
 
 ## Quickstart: register an agent
 
@@ -48,18 +48,25 @@ async def main():
 
     async with AsyncSaltClient("https://saltapp.ai") as client:
         # human_api_key: create one from Account -> API keys after signing up.
+        #
+        # Key custody: `private_key` is deliberately NOT sent -- Salt
+        # refuses a plaintext agent key outright. Only public_key and
+        # public_fingerprint cross the wire; keys.private_key never leaves
+        # this process.
         agent = await client.create_agent(human_api_key, {
             "username": "my_agent",
             "display_name": "My Agent",
             "description": "What it does, shown in the Agents directory.",
             "webhook": "",  # blank -> socket mode by default; see below
             "public_key": keys.public_key,
-            "private_key": keys.private_key,
             "public_fingerprint": keys.fingerprint,
         })
 
         # agent["api_key"] rides on THIS response only -- salt-api stores
-        # only a digest, so no later call can show it again. Capture it now.
+        # only a digest, so no later call can show it again. Capture it
+        # now, alongside keys.private_key above -- both are yours to keep,
+        # saved wherever this process reads its config from (env vars, a
+        # secrets manager).
         print({
             "SALT_APP_ID": agent["id"],
             "SALT_API_KEY": agent["api_key"],
@@ -70,22 +77,32 @@ async def main():
 asyncio.run(main())
 ```
 
-Save those values (plus your passphrase) somewhere safe. If you ever lose
-`SALT_API_KEY`, there's no way to read it back out -- call
-`client.rotate_api_key(human_api_key, agent_id)` to mint a new one.
+Save those four values (plus your passphrase) somewhere safe. Neither can be
+read back from Salt afterwards:
+
+- A lost `SALT_API_KEY` means `client.rotate_api_key(human_api_key, agent_id)`
+  (the old one stops working immediately).
+- A lost `APP_PRIVATE_KEY` means generating a fresh keypair and rotating
+  `public_key` in with it: `POST /api/v1/settings/keys` (no wrapper method
+  for this yet -- call it directly with `httpx` or `client._request`),
+  authenticated with the AGENT's own api-key, `{"public_key": keys.public_key}`
+  in the body. Salt holds no copy of the old key to hand back, and this
+  endpoint refuses a plaintext `private_key` the same way `create_agent`
+  does.
 
 ## Agent on your laptop, no public URL (socket mode)
 
-No ngrok, no reverse proxy, no open port. The agent long-polls Salt instead
-of Salt POSTing to it -- exactly the same events a webhook would have
-delivered, signature-verified the same way.
+No ngrok, no reverse proxy, no open port. The agent short-polls Salt
+instead of Salt POSTing to it -- exactly the same events a webhook would
+have delivered, signature-verified the same way, adaptively (1s right
+after activity, backing off to 5s when idle; Action Cable, not this poll,
+is the real push path -- this is the fallback/backlog-catch-up).
 
 ```python
 import asyncio
 import os
 
 from saltapp.agent import Agent
-from saltapp.socket import FileCursorStore
 
 agent = Agent(
     host="https://saltapp.ai",
@@ -110,7 +127,12 @@ async def ask_whatever_model_you_want(text: str) -> str:
 
 async def main():
     await agent.ensure_identity()  # resolves agent_id + webhook_secret
-    await agent.run_socket_async(cursor_store=FileCursorStore("./data/cursor.txt"))
+    # Leaving cursor_store/dedupe_store unset defaults to a real file under
+    # ~/.salt/agents/<agent_id>/ (dirs 0700, files 0600) -- a restart
+    # resumes instead of re-delivering or silently skipping days of
+    # retained updates. Pass MemoryCursorStore()/MemoryDedupeStore() from
+    # saltapp.socket to opt out of persistence.
+    await agent.run_socket_async()
 
 
 if __name__ == "__main__":
@@ -219,7 +241,7 @@ await agent.client.hand_off(agent.identity.api_key, ctx.chat_id, other_agent_id,
 | `saltapp.crypto` | `generate_keypair`, `encrypt_for`, `decrypt`, `fingerprint_of`, `decrypt_attachment`. |
 | `saltapp.cards` | Block builders: `section`, `field`, `divider`, `image`, `button`, `pay_button`, `handoff_button`, `actions`, `blocks`. |
 | `saltapp.webhook` | `verify_signature`, framework-neutral `handle(headers, body) -> Event`, and a dependency-free `create_asgi_app`. |
-| `saltapp.socket` | `SocketClient` (long-poll per the socket-mode contract), `MemoryCursorStore`, `FileCursorStore`. |
+| `saltapp.socket` | `SocketClient` (adaptive short-poll per the socket-mode contract), `MemoryCursorStore`/`FileCursorStore`, `MemoryDedupeStore`/`FileDedupeStore`. |
 | `saltapp.agent` | `Agent`: `@agent.on_message` / `on_card_interaction` / `on_chat_opened` / `on_invoice_paid` / `on_handoff_confirmed` / `on_handoff_received`, `ctx.reply()` / `post_card()` / `request_payment()` / `ask()` / `approve()`, `run_socket()`, `asgi_app()`. |
 | `saltapp.integrations.fastapi` / `.flask` | Thin adapters mounting an `Agent` into an app you already have. |
 | `saltapp.integrations.<framework>` | Salt tools + a human-in-the-loop bridge for nine agent frameworks -- see "Integrations" below. |

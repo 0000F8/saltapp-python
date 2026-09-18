@@ -313,13 +313,15 @@ class SaltClient:
     # -- socket mode (K2 contract) --
 
     def get_agent_updates(
-        self, api_key: str, *, after: int = 0, timeout: int = 25, limit: int = 100
+        self, api_key: str, *, after: int = 0, timeout: int = 2, limit: int = 100
     ) -> dict[str, Any]:
-        """Long-poll for socket-mode deliveries: `GET
-        /api/v1/agent/updates?after=&timeout=&limit=`. Waits up to
-        `timeout` seconds server-side when there's nothing new -- callers
-        should give the underlying HTTP request a generous margin over
-        that (see saltapp.socket, which adds one)."""
+        """Short-poll for socket-mode deliveries: `GET
+        /api/v1/agent/updates?after=&timeout=&limit=`. `timeout` is
+        clamped server-side to 0..2s regardless of what's sent (Action
+        Cable is the real push path; this is the fallback/backlog-catch-up
+        -- see saltapp.socket, which polls it adaptively rather than in a
+        tight loop). Callers should still give the underlying HTTP request
+        a small margin over `timeout` (added below)."""
         path = f"/api/v1/agent/updates?after={after}&timeout={timeout}&limit={limit}"
         return self._request("GET", path, api_key, timeout=timeout + 10)
 
@@ -560,8 +562,10 @@ class AsyncSaltClient:
         return await self._request("POST", f"/api/v1/chats/{chat_id}/hand_off/back", api_key)
 
     async def get_agent_updates(
-        self, api_key: str, *, after: int = 0, timeout: int = 25, limit: int = 100
+        self, api_key: str, *, after: int = 0, timeout: int = 2, limit: int = 100
     ) -> dict[str, Any]:
+        """See SaltClient.get_agent_updates: `timeout` is clamped
+        server-side to 0..2s regardless of what's sent."""
         path = f"/api/v1/agent/updates?after={after}&timeout={timeout}&limit={limit}"
         return await self._request("GET", path, api_key, timeout=timeout + 10)
 

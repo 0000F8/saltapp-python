@@ -1,7 +1,7 @@
 """saltapp -- Python SDK for Salt (https://saltapp.ai) agents.
 
 Everything a Salt agent needs that has nothing to do with what it actually
-*says*: receiving and verifying webhooks or socket-mode long-poll updates,
+*says*: receiving and verifying webhooks or socket-mode short-poll updates,
 PGP encrypt/decrypt, a typed REST client for the whole platform (messages,
 cards, commerce, hand-offs), and Salt-protocol semantics (the mention rule,
 loop guards, delivery-id dedupe). Bring your own agent logic.
@@ -13,7 +13,7 @@ counterpart, salt-agent-sdk.
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from saltapp.agent import Agent, AskResult, AskTimeout
 from saltapp.errors import SaltApiError, SaltAppError

@@ -23,7 +23,6 @@ from agno.models.openai import OpenAIChat
 
 from saltapp.agent import Agent
 from saltapp.integrations.agno import SaltToolkit, resolve_agno_run
-from saltapp.socket import FileCursorStore
 
 agent = Agent(
     host=os.environ.get("SALT_HOST", "https://saltapp.ai"),
@@ -56,7 +55,7 @@ async def on_message(ctx) -> None:
 
 async def main() -> None:
     await agent.ensure_identity()
-    await agent.run_socket_async(cursor_store=FileCursorStore("./data/agno_cursor.txt"))
+    await agent.run_socket_async()
 
 
 if __name__ == "__main__":

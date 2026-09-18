@@ -22,7 +22,6 @@ from google.genai import types
 
 from saltapp.agent import Agent
 from saltapp.integrations.adk import build_tools, resolve_confirmation_via_salt
-from saltapp.socket import FileCursorStore
 
 agent = Agent(
     host=os.environ.get("SALT_HOST", "https://saltapp.ai"),
@@ -62,7 +61,7 @@ async def on_message(ctx) -> None:
 
 async def main() -> None:
     await agent.ensure_identity()
-    await agent.run_socket_async(cursor_store=FileCursorStore("./data/adk_cursor.txt"))
+    await agent.run_socket_async()
 
 
 if __name__ == "__main__":

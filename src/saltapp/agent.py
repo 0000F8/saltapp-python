@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re as _re
 import threading
 import time
 import uuid
@@ -26,10 +27,23 @@ from saltapp import cards as cards_module
 from saltapp.client import AsyncSaltClient
 from saltapp.errors import SaltAppError
 from saltapp.identity import Identity
-from saltapp.socket import CursorStore, MemoryCursorStore, SocketClient
+from saltapp.socket import (
+    DEFAULT_POLL_TIMEOUT_SECONDS,
+    SOCKET_SIGNATURE_TOLERANCE_SECONDS,
+    CursorStore,
+    DedupeStore,
+    SocketClient,
+)
 from saltapp.webhook import Event, create_asgi_app
 
 DEFAULT_ASK_TIMEOUT_SECONDS = 120.0
+
+# M2 (security review, 2026-09-18): an exact yes/no word (with at most one
+# trailing "." or "!"), not a prefix/substring match -- "yesterday I..."
+# must never read as an approval. Governs only the FREE-TEXT reply path; a
+# tapped "Yes"/"No" button resolves by its own label, matched exactly
+# below, never through this regex.
+_APPROVE_YES_RE = _re.compile(r"^(y|yes)[.!]?$", _re.IGNORECASE)
 
 # Only in a group (> 2 members): a reply is addressed back to whoever it
 # answers by @handle, same as salt-agent-sdk's makeReply -- being spoken to
@@ -75,24 +89,39 @@ class _Waiter:
 class _AskRegistry:
     """Correlates a posted "ask" card (or a free-text question) with the
     interaction/message that answers it. Purely in-process, purely built on
-    existing primitives -- see the module docstring."""
+    existing primitives -- see the module docstring.
+
+    M2 (security review, 2026-09-18) parity with the TS SDK's ask.ts: a
+    pending ask names one expected answerer (`expected_answerer_id`) when
+    the caller has one (see `_BaseContext.ask()`'s default derivation) and
+    a tap/reply from anyone else -- or from ANY agent, regardless of id --
+    never resolves it. There's no separate identity dimension on the key
+    here the way ask.ts needs one: the TS SDK's IdentityStore can host
+    several identities sharing one process/registry, but
+    `saltapp.agent.Agent` hosts exactly one identity per instance (see
+    AGENTS.md) and `_AskRegistry` is a per-Agent attribute, so "this
+    identity's own pending asks" is already the whole registry -- keying by
+    (identity, chat) would just repeat information the instance boundary
+    already carries.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._by_card_id: dict[str, _Waiter] = {}
-        # chat_id -> (waiter, expected_sender_id_or_None)
+        # card_id -> (waiter, expected_answerer_id_or_None)
+        self._by_card_id: dict[str, tuple[_Waiter, Optional[str]]] = {}
+        # chat_id -> (waiter, expected_answerer_id_or_None)
         self._by_chat_text: dict[str, tuple[_Waiter, Optional[str]]] = {}
 
-    def register_card(self, card_id: str) -> _Waiter:
+    def register_card(self, card_id: str, expected_answerer_id: Optional[str] = None) -> _Waiter:
         waiter = _Waiter()
         with self._lock:
-            self._by_card_id[card_id] = waiter
+            self._by_card_id[card_id] = (waiter, expected_answerer_id)
         return waiter
 
-    def register_free_text(self, chat_id: str, expected_sender_id: Optional[str]) -> _Waiter:
+    def register_free_text(self, chat_id: str, expected_answerer_id: Optional[str]) -> _Waiter:
         waiter = _Waiter()
         with self._lock:
-            self._by_chat_text[chat_id] = (waiter, expected_sender_id)
+            self._by_chat_text[chat_id] = (waiter, expected_answerer_id)
         return waiter
 
     def cancel_card(self, card_id: str) -> None:
@@ -104,21 +133,45 @@ class _AskRegistry:
             self._by_chat_text.pop(chat_id, None)
 
     def try_resolve_card_interaction(self, card_id: str, action_id: str, user: dict, blocks: Any) -> bool:
+        """True when this tap actually resolved the pending ask. A tap from
+        an agent (any id) is ignored outright; a tap from someone other
+        than the ask's named answerer (when one was named) is ignored too
+        -- in both cases the waiter is left pending (not consumed), so the
+        real answerer's later tap/reply can still resolve it, and this tap
+        falls through to the caller's own on_card_interaction handler, if
+        any, exactly as if no ask() were pending."""
         with self._lock:
-            waiter = self._by_card_id.pop(card_id, None)
-        if waiter is None:
+            entry = self._by_card_id.get(card_id)
+        if entry is None:
             return False
+        waiter, expected_answerer_id = entry
+        if user.get("account_type") == "Agent":
+            return False
+        if expected_answerer_id is not None and str(user.get("id", "")).lower() != str(expected_answerer_id).lower():
+            return False
+        with self._lock:
+            # Re-check under the lock: another thread may have already
+            # resolved (and popped) this exact card between the read above
+            # and here.
+            if self._by_card_id.pop(card_id, None) is None:
+                return False
         waiter.result = {"kind": "option", "action_id": action_id, "user": user, "blocks": blocks}
         waiter.event.set()
         return True
 
-    def try_resolve_message(self, chat_id: str, sender_id: str, text: str) -> bool:
+    def try_resolve_message(self, chat_id: str, sender_id: str, text: str, *, sender_is_agent: bool = False) -> bool:
+        """True when this message actually resolved the pending free-text
+        ask. A message from an agent is ignored outright; a message from
+        someone other than the ask's named answerer (when one was named)
+        is ignored too -- the waiter is left pending in both cases."""
+        if sender_is_agent:
+            return False
         with self._lock:
             entry = self._by_chat_text.get(chat_id)
             if entry is None:
                 return False
-            waiter, expected_sender_id = entry
-            if expected_sender_id is not None and str(sender_id).lower() != str(expected_sender_id).lower():
+            waiter, expected_answerer_id = entry
+            if expected_answerer_id is not None and str(sender_id).lower() != str(expected_answerer_id).lower():
                 return False
             del self._by_chat_text[chat_id]
         waiter.result = {"kind": "text", "text": text, "sender_id": sender_id}
@@ -150,6 +203,23 @@ class _BaseContext:
     def __init__(self, agent: "Agent", chat_id: str) -> None:
         self.agent = agent
         self.chat_id = chat_id
+
+    def _default_answerer_id(self) -> Optional[str]:
+        """The human who triggered whatever this context is handling, when
+        there's a natural one to name -- overridden by MessageContext (the
+        sender), ChatOpenedContext (whoever opened the chat), and
+        InvoicePaidContext (the buyer), each only when that party isn't an
+        agent (see AskOptions.answererId in ask.ts: "always the HUMAN one;
+        an agent sender/buyer/opener yields no default"). A bare context
+        (`saltapp.agent.tool_context`, used by every
+        `saltapp.integrations.<framework>` tool) has no triggering message
+        behind it at all, so this stays None there -- callers of `ask()`
+        through that path must pass `from_user_id` explicitly for the
+        answerer restriction to apply; without one, `ask()` falls back to
+        the permissive "anyone in the chat may answer" behavior it always
+        had, a deliberate, documented divergence from the TS SDK's hard
+        requirement (see AGENTS.md)."""
+        return None
 
     async def post_card(self, blocks: list[dict[str, Any]], text: str) -> dict[str, Any]:
         return await self.agent.client.post_card(self.agent.identity.api_key, self.chat_id, blocks, text)
@@ -187,15 +257,25 @@ class _BaseContext:
           tapped.
         - `free_text=True` (may be combined with `options`): also accepts a
           plain chat message as the answer; resolves with `kind="text"`.
-        - `from_user_id`: if given, only a free-text reply from THIS sender
-          counts as the answer (anyone may still tap a button, since a
-          button tap is already scoped to whoever tapped it). Leave unset
-          in a 1:1, where there's only one person it could be.
+        - `from_user_id`: the ONE person allowed to answer (M2, security
+          review 2026-09-18) -- a tap or typed reply from anyone else, or
+          from any agent regardless of id, is ignored outright and never
+          resolves this ask. Defaults to whoever triggered the context
+          this `ask()` is called from (`MessageContext`'s sender,
+          `ChatOpenedContext`'s opener, `InvoicePaidContext`'s buyer -- see
+          `_default_answerer_id()`); when that party is itself an agent, or
+          this is a bare context with no natural trigger (e.g.
+          `saltapp.integrations.*`'s `tool_context()`), there is no
+          default, and `ask()` falls back to its old permissive behavior
+          (anyone non-agent in the chat may answer) rather than raising --
+          pass `from_user_id` explicitly to restrict it there too.
 
         Raises `AskTimeout` if nothing answers within `timeout` seconds.
         """
         if not options and not free_text:
             raise ValueError("ask() needs options, free_text=True, or both")
+
+        answerer_id = from_user_id if from_user_id is not None else self._default_answerer_id()
 
         blocks: list[dict[str, Any]] = [cards_module.section(text=question)]
         action_ids: dict[str, str] = {}
@@ -204,14 +284,17 @@ class _BaseContext:
             for i, label in enumerate(options):
                 action_id = f"ask_{uuid.uuid4().hex[:8]}_{i}"
                 action_ids[action_id] = label
-                buttons.append(cards_module.button(action_id, label))
+                # Server-enforced too (cards_controller#actions/Card#find_button):
+                # a tap from anyone not on restricted_to is refused 403
+                # before it ever becomes a card_interaction event.
+                buttons.append(cards_module.button(action_id, label, restricted_to=[answerer_id] if answerer_id else None))
             blocks.append(cards_module.actions(buttons))
 
         card = await self.post_card(blocks, question)
         card_id = str(card.get("id") or card.get("card_id"))
 
-        card_waiter = self.agent._ask_registry.register_card(card_id) if options else None
-        text_waiter = self.agent._ask_registry.register_free_text(self.chat_id, from_user_id) if free_text else None
+        card_waiter = self.agent._ask_registry.register_card(card_id, answerer_id) if options else None
+        text_waiter = self.agent._ask_registry.register_free_text(self.chat_id, answerer_id) if free_text else None
 
         try:
             waiters = [w for w in (card_waiter, text_waiter) if w is not None]
@@ -248,12 +331,17 @@ class _BaseContext:
             await asyncio.sleep(min(0.05, remaining))
 
     async def approve(self, summary: str, *, from_user_id: str | None = None, timeout: float = DEFAULT_ASK_TIMEOUT_SECONDS) -> bool:
-        """`ask()` specialized to a Yes/No decision -- either button tap or
-        typed "yes"/"no" answers it. Returns True for "Yes"."""
+        """`ask()` specialized to a Yes/No decision: two buttons, and (M2,
+        security review 2026-09-18) an EXACT "y"/"yes" typed reply
+        (case-insensitive, an optional trailing "." or "!") also counts as
+        approval -- anything else typed, including a near-miss like
+        "yeah", resolves False, same as tapping "No". A tapped button
+        matches its own label exactly (never through the typed-reply
+        regex)."""
         result = await self.ask(summary, options=["Yes", "No"], free_text=True, from_user_id=from_user_id, timeout=timeout)
         if result.kind == "option":
             return (result.value or "").strip().lower() == "yes"
-        return (result.text or "").strip().lower() in ("yes", "y", "approve", "approved", "ok", "okay")
+        return bool(_APPROVE_YES_RE.match((result.text or "").strip()))
 
 
 class MessageContext(_BaseContext):
@@ -276,6 +364,11 @@ class MessageContext(_BaseContext):
         self.room_id = room_id
         self.chat_meta = chat_meta
         self.raw_message = raw_message
+
+    def _default_answerer_id(self) -> Optional[str]:
+        if self.sender.get("account_type") == "Agent":
+            return None
+        return self.sender_id
 
     async def reply(self, text: str) -> None:
         addressee = self.sender if self.sender.get("account_type") != "Agent" else None
@@ -313,6 +406,11 @@ class ChatOpenedContext(_BaseContext):
         self.opened_by = opened_by
         self.members = members
 
+    def _default_answerer_id(self) -> Optional[str]:
+        if self.opened_by.get("account_type") == "Agent":
+            return None
+        return self.opened_by.get("id")
+
     async def reply(self, text: str) -> None:
         await self.agent.client.send_message(self.agent.identity, self.chat_id, text)
 
@@ -328,6 +426,11 @@ class InvoicePaidContext(_BaseContext):
         self.amount = amount
         self.is_top_up = is_top_up
         self.transfer_request_id = transfer_request_id
+
+    def _default_answerer_id(self) -> Optional[str]:
+        if self.buyer.get("account_type") == "Agent":
+            return None
+        return self.buyer.get("id")
 
     async def reply(self, text: str) -> None:
         await self.agent.client.send_message(self.agent.identity, self.chat_id, text)
@@ -464,10 +567,13 @@ class Agent:
             return  # never reply to our own message (webhook loop-back)
 
         text = message.get("message") or ""
+        sender_is_agent = sender.get("account_type") == "Agent"
 
         # An ask() waiting on free text from this chat gets first refusal --
-        # it must not also be treated as a fresh prompt for on_message.
-        if self._ask_registry.try_resolve_message(chat_id, sender_id, text):
+        # it must not also be treated as a fresh prompt for on_message. An
+        # agent's own message never resolves someone else's pending ask
+        # (M2, security review 2026-09-18).
+        if self._ask_registry.try_resolve_message(chat_id, sender_id, text, sender_is_agent=sender_is_agent):
             return
 
         # GACM: another agent is declared active in this chat -- stay silent.
@@ -475,7 +581,6 @@ class Agent:
         if active_agent_id and str(active_agent_id).lower() != str(self.identity.agent_id).lower():
             return
 
-        sender_is_agent = sender.get("account_type") == "Agent"
         reply_count_key = str(chat_id).lower()
         if sender_is_agent:
             if await self._chat_has_non_observer_human(chat_id, chat_meta):
@@ -578,22 +683,36 @@ class Agent:
         self,
         *,
         cursor_store: CursorStore | None = None,
-        poll_timeout: int = 25,
+        dedupe_store: DedupeStore | None = None,
+        poll_timeout: int = DEFAULT_POLL_TIMEOUT_SECONDS,
         poll_limit: int = 100,
     ) -> None:
         """Blocking entry point for socket mode: no public URL needed. Sets
         `users.delivery_mode = "socket"` on salt-api (idempotent), then
-        long-polls forever. Ctrl-C to stop."""
-        asyncio.run(self.run_socket_async(cursor_store=cursor_store, poll_timeout=poll_timeout, poll_limit=poll_limit))
+        short-polls (adaptively -- see saltapp.socket) forever. Ctrl-C to
+        stop."""
+        asyncio.run(
+            self.run_socket_async(
+                cursor_store=cursor_store, dedupe_store=dedupe_store, poll_timeout=poll_timeout, poll_limit=poll_limit
+            )
+        )
 
     async def run_socket_async(
         self,
         *,
         cursor_store: CursorStore | None = None,
-        poll_timeout: int = 25,
+        dedupe_store: DedupeStore | None = None,
+        poll_timeout: int = DEFAULT_POLL_TIMEOUT_SECONDS,
         poll_limit: int = 100,
         stop: asyncio.Event | None = None,
     ) -> None:
+        """Leaving `cursor_store`/`dedupe_store` unset defaults to
+        FileCursorStore/FileDedupeStore under `~/.salt/agents/<agent_id>/`
+        (dirs 0700, files 0600) -- a restart resumes instead of
+        re-delivering or silently skipping up to 7 days of retained
+        updates. Pass `saltapp.socket.MemoryCursorStore()`/
+        `MemoryDedupeStore()` explicitly to opt out of persistence (always
+        do this in a test)."""
         await self.ensure_identity()
         try:
             await self.client.set_delivery_mode(self.identity.api_key, "socket")
@@ -603,10 +722,16 @@ class Agent:
         socket_client = SocketClient(
             self.client,
             self.identity.api_key,
+            agent_id=self.identity.agent_id,
             webhook_secret_provider=lambda: self.webhook_secret,
             verify_signatures=self.verify_signatures,
-            tolerance_seconds=self.signature_tolerance_seconds,
-            cursor_store=cursor_store or MemoryCursorStore(),
+            # The wide socket-mode tolerance (SOCKET_SIGNATURE_TOLERANCE_SECONDS,
+            # not self.signature_tolerance_seconds -- that one's for the
+            # webhook/ASGI path's 300s default) -- see saltapp.socket's
+            # header comment for why an outbox row needs much more slack.
+            tolerance_seconds=SOCKET_SIGNATURE_TOLERANCE_SECONDS,
+            cursor_store=cursor_store,
+            dedupe_store=dedupe_store,
             poll_timeout=poll_timeout,
             poll_limit=poll_limit,
             logger=self._logger,
