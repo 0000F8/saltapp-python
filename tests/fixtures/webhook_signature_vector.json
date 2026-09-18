@@ -1,0 +1,64 @@
+{
+  "generated_by": "salt-agent-sdk dist/webhook.js (createWebhookServer), via saltapp-python/scripts/generate_ts_vector.cjs",
+  "generated_at": "2026-09-18T04:19:58.888Z",
+  "sdk_version": "0.7.1",
+  "algorithm": "HMAC-SHA256(secret, `${t}.${raw_body}`) -> hex, header `X-Salt-Signature: t=<t>,v1=<hex>`",
+  "tolerance_seconds": 300,
+  "vectors": [
+    {
+      "name": "valid_fresh",
+      "description": "Correct HMAC, timestamp now -- salt-agent-sdk accepts it.",
+      "secret": "vector-secret-do-not-use-in-prod",
+      "agent_id": "11111111-1111-1111-1111-111111111111",
+      "signature_header": "t=1789705198,v1=019466623801da57f80dd337f357f526882bcac10777fdb227f3505e8e0a015f",
+      "body": "{\"message\":{\"message_id\":424242,\"chat_id\":\"22222222-2222-2222-2222-222222222222\",\"message\":\"-----BEGIN PGP MESSAGE-----\\nnot a real ciphertext, only signature verification is under test\\n-----END PGP MESSAGE-----\",\"user\":{\"id\":\"33333333-3333-3333-3333-333333333333\",\"display_name\":\"Vector Sender\",\"account_type\":\"User\"}},\"chat\":{}}",
+      "now_unix": 1789705198,
+      "ts_sdk_status": 200,
+      "expect_valid": true
+    },
+    {
+      "name": "tampered_digest",
+      "description": "Digest bytes flipped -- salt-agent-sdk rejects it.",
+      "secret": "vector-secret-do-not-use-in-prod",
+      "agent_id": "11111111-1111-1111-1111-111111111111",
+      "signature_header": "t=1789705198,v1=019466623801da57f80dd337f357f526882bcac10777fdb227f3505e8e0a0100",
+      "body": "{\"message\":{\"message_id\":424242,\"chat_id\":\"22222222-2222-2222-2222-222222222222\",\"message\":\"-----BEGIN PGP MESSAGE-----\\nnot a real ciphertext, only signature verification is under test\\n-----END PGP MESSAGE-----\",\"user\":{\"id\":\"33333333-3333-3333-3333-333333333333\",\"display_name\":\"Vector Sender\",\"account_type\":\"User\"}},\"chat\":{}}",
+      "now_unix": 1789705198,
+      "ts_sdk_status": 401,
+      "expect_valid": false
+    },
+    {
+      "name": "stale_timestamp",
+      "description": "Correct digest for its own timestamp, but 3600s old -- past the 300s replay window.",
+      "secret": "vector-secret-do-not-use-in-prod",
+      "agent_id": "11111111-1111-1111-1111-111111111111",
+      "signature_header": "t=1789701598,v1=90d494d95cc0bcefbd509dfc82d69265d15c384e311714501dbf140c682883ad",
+      "body": "{\"message\":{\"message_id\":424242,\"chat_id\":\"22222222-2222-2222-2222-222222222222\",\"message\":\"-----BEGIN PGP MESSAGE-----\\nnot a real ciphertext, only signature verification is under test\\n-----END PGP MESSAGE-----\",\"user\":{\"id\":\"33333333-3333-3333-3333-333333333333\",\"display_name\":\"Vector Sender\",\"account_type\":\"User\"}},\"chat\":{}}",
+      "now_unix": 1789705198,
+      "ts_sdk_status": 401,
+      "expect_valid": false
+    },
+    {
+      "name": "wrong_secret",
+      "description": "Digest computed with a different secret than the one salt-agent-sdk fetches for this agent.",
+      "secret": "vector-secret-do-not-use-in-prod",
+      "agent_id": "11111111-1111-1111-1111-111111111111",
+      "signature_header": "t=1789705198,v1=d86f63789c260491fbb826b80d71922e69766ea239828c9b8a73f24fa307a0e6",
+      "body": "{\"message\":{\"message_id\":424242,\"chat_id\":\"22222222-2222-2222-2222-222222222222\",\"message\":\"-----BEGIN PGP MESSAGE-----\\nnot a real ciphertext, only signature verification is under test\\n-----END PGP MESSAGE-----\",\"user\":{\"id\":\"33333333-3333-3333-3333-333333333333\",\"display_name\":\"Vector Sender\",\"account_type\":\"User\"}},\"chat\":{}}",
+      "now_unix": 1789705198,
+      "ts_sdk_status": 401,
+      "expect_valid": false
+    },
+    {
+      "name": "missing_signature",
+      "description": "No X-Salt-Signature header at all.",
+      "secret": "vector-secret-do-not-use-in-prod",
+      "agent_id": "11111111-1111-1111-1111-111111111111",
+      "signature_header": null,
+      "body": "{\"message\":{\"message_id\":424242,\"chat_id\":\"22222222-2222-2222-2222-222222222222\",\"message\":\"-----BEGIN PGP MESSAGE-----\\nnot a real ciphertext, only signature verification is under test\\n-----END PGP MESSAGE-----\",\"user\":{\"id\":\"33333333-3333-3333-3333-333333333333\",\"display_name\":\"Vector Sender\",\"account_type\":\"User\"}},\"chat\":{}}",
+      "now_unix": 1789705198,
+      "ts_sdk_status": 401,
+      "expect_valid": false
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+# Publishes to PyPI using Trusted Publishing (OIDC) -- no PyPI API token
+# stored anywhere. See HANDOFF.md for the one-time PyPI-side setup this
+# depends on (a "pending publisher" registered with THIS repo/workflow's
+# exact name before the first run).
+#
+# Triggers on a GitHub Release being published. To ship 0.1.0:
+#   git tag v0.1.0 && git push origin v0.1.0
+#   gh release create v0.1.0 --title v0.1.0 --notes "..."
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+  # Manual dry run: builds and checks the package but only publishes when
+  # triggered by an actual release above (see the `if:` on the publish job).
+  workflow_dispatch: {}
+
+jobs:
+  build:
+    name: Build sdist and wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build tooling
+        run: python -m pip install --upgrade build twine
+
+      - name: Build
+        run: python -m build
+
+      - name: Check
+        run: python -m twine check dist/*
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    name: Publish to PyPI
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' && github.event.action == 'published'
+    environment:
+      name: pypi
+      url: https://pypi.org/project/saltapp/
+    permissions:
+      id-token: write  # required for PyPI Trusted Publishing (OIDC)
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

@@ -1,0 +1,615 @@
+# The `Agent` class: hosts exactly one Salt identity, wires together
+# `saltapp.client`, `saltapp.webhook`/`saltapp.socket`, and the Salt-protocol
+# mechanics ported from salt-agent-sdk/src/webhook.ts -- delivery-id dedupe,
+# the mention rule (an agent-authored message in a chat with a real human
+# present is only yours to answer when you're @mentioned), the
+# agent-to-agent loop guard, and GACM (Global Agent Chat Mode: stay silent
+# when the chat names another agent as active) -- so a handler only ever
+# has to decide WHAT to say, never WHETHER to say it.
+#
+# `ctx.ask()`/`ctx.approve()` are this SDK's own addition (not yet in the TS
+# SDK as of this writing): built entirely on primitives that already exist
+# -- post a card, wait for the matching card_interaction or a plain chat
+# reply -- with no new server endpoint assumed. See AGENTS.md for why.
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Optional
+
+from saltapp import cards as cards_module
+from saltapp.client import AsyncSaltClient
+from saltapp.errors import SaltAppError
+from saltapp.identity import Identity
+from saltapp.socket import CursorStore, MemoryCursorStore, SocketClient
+from saltapp.webhook import Event, create_asgi_app
+
+DEFAULT_ASK_TIMEOUT_SECONDS = 120.0
+
+# Only in a group (> 2 members): a reply is addressed back to whoever it
+# answers by @handle, same as salt-agent-sdk's makeReply -- being spoken to
+# by name is how a person tells which of several messages a reply is for.
+_MENTION_RE_TEMPLATE = r"(^|\s)@{handle}(?![\w.-])"
+
+MAX_AGENT_TO_AGENT_REPLIES_PER_CHAT = 2
+CONSULT_RUNAWAY_LIMIT = 20
+
+
+class AskTimeout(SaltAppError):
+    """`ctx.ask()`/`ctx.approve()` got no answer within the timeout."""
+
+
+class _BoundedSet:
+    """A bounded "have I seen this before" set, oldest-evicted-first --
+    ported from webhook.ts's seenMessageIds/seenChatOpened pattern, applied
+    here to X-Salt-Delivery-Id so every event family (not just messages)
+    gets the same dedupe for free."""
+
+    def __init__(self, max_size: int = 2000) -> None:
+        self._max_size = max_size
+        self._seen: dict[str, None] = {}
+        self._lock = threading.Lock()
+
+    def seen(self, key: str) -> bool:
+        with self._lock:
+            if key in self._seen:
+                return True
+            self._seen[key] = None
+            if len(self._seen) > self._max_size:
+                oldest = next(iter(self._seen))
+                del self._seen[oldest]
+            return False
+
+
+@dataclass
+class _Waiter:
+    event: threading.Event = field(default_factory=threading.Event)
+    result: dict[str, Any] | None = None
+
+
+class _AskRegistry:
+    """Correlates a posted "ask" card (or a free-text question) with the
+    interaction/message that answers it. Purely in-process, purely built on
+    existing primitives -- see the module docstring."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._by_card_id: dict[str, _Waiter] = {}
+        # chat_id -> (waiter, expected_sender_id_or_None)
+        self._by_chat_text: dict[str, tuple[_Waiter, Optional[str]]] = {}
+
+    def register_card(self, card_id: str) -> _Waiter:
+        waiter = _Waiter()
+        with self._lock:
+            self._by_card_id[card_id] = waiter
+        return waiter
+
+    def register_free_text(self, chat_id: str, expected_sender_id: Optional[str]) -> _Waiter:
+        waiter = _Waiter()
+        with self._lock:
+            self._by_chat_text[chat_id] = (waiter, expected_sender_id)
+        return waiter
+
+    def cancel_card(self, card_id: str) -> None:
+        with self._lock:
+            self._by_card_id.pop(card_id, None)
+
+    def cancel_free_text(self, chat_id: str) -> None:
+        with self._lock:
+            self._by_chat_text.pop(chat_id, None)
+
+    def try_resolve_card_interaction(self, card_id: str, action_id: str, user: dict, blocks: Any) -> bool:
+        with self._lock:
+            waiter = self._by_card_id.pop(card_id, None)
+        if waiter is None:
+            return False
+        waiter.result = {"kind": "option", "action_id": action_id, "user": user, "blocks": blocks}
+        waiter.event.set()
+        return True
+
+    def try_resolve_message(self, chat_id: str, sender_id: str, text: str) -> bool:
+        with self._lock:
+            entry = self._by_chat_text.get(chat_id)
+            if entry is None:
+                return False
+            waiter, expected_sender_id = entry
+            if expected_sender_id is not None and str(sender_id).lower() != str(expected_sender_id).lower():
+                return False
+            del self._by_chat_text[chat_id]
+        waiter.result = {"kind": "text", "text": text, "sender_id": sender_id}
+        waiter.event.set()
+        return True
+
+    @staticmethod
+    async def wait(waiter: _Waiter, timeout: float) -> dict[str, Any]:
+        ok = await asyncio.to_thread(waiter.event.wait, timeout)
+        if not ok:
+            raise AskTimeout(f"no answer within {timeout}s")
+        assert waiter.result is not None
+        return waiter.result
+
+
+@dataclass
+class AskResult:
+    """The answer to `ctx.ask()`: either a tapped button (`kind="option"`,
+    `action_id`/`value` set) or a typed reply (`kind="text"`, `text` set)."""
+
+    kind: str
+    action_id: str | None = None
+    value: str | None = None
+    text: str | None = None
+    user: dict[str, Any] | None = None
+
+
+class _BaseContext:
+    def __init__(self, agent: "Agent", chat_id: str) -> None:
+        self.agent = agent
+        self.chat_id = chat_id
+
+    async def post_card(self, blocks: list[dict[str, Any]], text: str) -> dict[str, Any]:
+        return await self.agent.client.post_card(self.agent.identity.api_key, self.chat_id, blocks, text)
+
+    async def update_card(self, card_id: str, blocks: list[dict[str, Any]]) -> dict[str, Any]:
+        return await self.agent.client.update_card(self.agent.identity.api_key, card_id, blocks)
+
+    async def request_payment(
+        self, *, receiver_id: str, wallet_id: str, amount: str, message: str | None = None
+    ) -> dict[str, Any]:
+        return await self.agent.client.request_payment(
+            self.agent.identity.api_key,
+            chat_id=self.chat_id,
+            receiver_id=receiver_id,
+            wallet_id=wallet_id,
+            amount=amount,
+            message=message,
+        )
+
+    async def ask(
+        self,
+        question: str,
+        *,
+        options: list[str] | None = None,
+        free_text: bool = False,
+        from_user_id: str | None = None,
+        timeout: float = DEFAULT_ASK_TIMEOUT_SECONDS,
+    ) -> AskResult:
+        """Ask a human-in-the-loop question, built on cards + the
+        interaction/message that answers it (no new server endpoint
+        assumed -- see the module docstring):
+
+        - `options` (a list of short labels): posts a card with one button
+          per option; resolves with `kind="option"` the moment one is
+          tapped.
+        - `free_text=True` (may be combined with `options`): also accepts a
+          plain chat message as the answer; resolves with `kind="text"`.
+        - `from_user_id`: if given, only a free-text reply from THIS sender
+          counts as the answer (anyone may still tap a button, since a
+          button tap is already scoped to whoever tapped it). Leave unset
+          in a 1:1, where there's only one person it could be.
+
+        Raises `AskTimeout` if nothing answers within `timeout` seconds.
+        """
+        if not options and not free_text:
+            raise ValueError("ask() needs options, free_text=True, or both")
+
+        blocks: list[dict[str, Any]] = [cards_module.section(text=question)]
+        action_ids: dict[str, str] = {}
+        if options:
+            buttons = []
+            for i, label in enumerate(options):
+                action_id = f"ask_{uuid.uuid4().hex[:8]}_{i}"
+                action_ids[action_id] = label
+                buttons.append(cards_module.button(action_id, label))
+            blocks.append(cards_module.actions(buttons))
+
+        card = await self.post_card(blocks, question)
+        card_id = str(card.get("id") or card.get("card_id"))
+
+        card_waiter = self.agent._ask_registry.register_card(card_id) if options else None
+        text_waiter = self.agent._ask_registry.register_free_text(self.chat_id, from_user_id) if free_text else None
+
+        try:
+            waiters = [w for w in (card_waiter, text_waiter) if w is not None]
+            if len(waiters) == 1:
+                result = await _AskRegistry.wait(waiters[0], timeout)
+            else:
+                result = await self._wait_first(waiters, timeout)
+        finally:
+            if card_waiter is not None:
+                self.agent._ask_registry.cancel_card(card_id)
+            if text_waiter is not None:
+                self.agent._ask_registry.cancel_free_text(self.chat_id)
+
+        if result["kind"] == "option":
+            return AskResult(
+                kind="option",
+                action_id=result["action_id"],
+                value=action_ids.get(result["action_id"], result["action_id"]),
+                user=result.get("user"),
+            )
+        return AskResult(kind="text", text=result["text"])
+
+    @staticmethod
+    async def _wait_first(waiters: list[_Waiter], timeout: float) -> dict[str, Any]:
+        deadline = time.monotonic() + timeout
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise AskTimeout(f"no answer within {timeout}s")
+            for waiter in waiters:
+                if waiter.event.is_set():
+                    assert waiter.result is not None
+                    return waiter.result
+            await asyncio.sleep(min(0.05, remaining))
+
+    async def approve(self, summary: str, *, from_user_id: str | None = None, timeout: float = DEFAULT_ASK_TIMEOUT_SECONDS) -> bool:
+        """`ask()` specialized to a Yes/No decision -- either button tap or
+        typed "yes"/"no" answers it. Returns True for "Yes"."""
+        result = await self.ask(summary, options=["Yes", "No"], free_text=True, from_user_id=from_user_id, timeout=timeout)
+        if result.kind == "option":
+            return (result.value or "").strip().lower() == "yes"
+        return (result.text or "").strip().lower() in ("yes", "y", "approve", "approved", "ok", "okay")
+
+
+class MessageContext(_BaseContext):
+    def __init__(
+        self,
+        agent: "Agent",
+        *,
+        chat_id: str,
+        sender_id: str,
+        sender: dict[str, Any],
+        text: str,
+        room_id: str,
+        chat_meta: dict[str, Any],
+        raw_message: dict[str, Any],
+    ) -> None:
+        super().__init__(agent, chat_id)
+        self.sender_id = sender_id
+        self.sender = sender
+        self.text = text
+        self.room_id = room_id
+        self.chat_meta = chat_meta
+        self.raw_message = raw_message
+
+    async def reply(self, text: str) -> None:
+        addressee = self.sender if self.sender.get("account_type") != "Agent" else None
+        mentions = [self.sender_id] if addressee and addressee.get("username") else None
+        outgoing = text
+        if addressee and mentions:
+            import re
+
+            pattern = _MENTION_RE_TEMPLATE.format(handle=re.escape(addressee["username"]))
+            members = await self.agent.client.get_chat_members(self.agent.identity.api_key, self.chat_id)
+            if len(members) > 2 and not re.search(pattern, text):
+                outgoing = f"@{addressee['username']} {text}"
+            else:
+                mentions = None
+        await self.agent.client.send_message(self.agent.identity, self.chat_id, outgoing, mentions=mentions)
+
+
+class CardInteractionContext(_BaseContext):
+    def __init__(
+        self, agent: "Agent", *, chat_id: str, card_id: str, action_id: str, user: dict[str, Any], blocks: Any
+    ) -> None:
+        super().__init__(agent, chat_id)
+        self.card_id = card_id
+        self.action_id = action_id
+        self.user = user
+        self.blocks = blocks
+
+
+class ChatOpenedContext(_BaseContext):
+    def __init__(
+        self, agent: "Agent", *, chat_id: str, chat: dict[str, Any], opened_by: dict[str, Any], members: list[dict[str, Any]]
+    ) -> None:
+        super().__init__(agent, chat_id)
+        self.chat = chat
+        self.opened_by = opened_by
+        self.members = members
+
+    async def reply(self, text: str) -> None:
+        await self.agent.client.send_message(self.agent.identity, self.chat_id, text)
+
+
+class InvoicePaidContext(_BaseContext):
+    def __init__(
+        self, agent: "Agent", *, chat_id: str, buyer: dict[str, Any], line_items: list[dict[str, Any]],
+        amount: Any, is_top_up: bool, transfer_request_id: Any,
+    ) -> None:
+        super().__init__(agent, chat_id)
+        self.buyer = buyer
+        self.line_items = line_items
+        self.amount = amount
+        self.is_top_up = is_top_up
+        self.transfer_request_id = transfer_request_id
+
+    async def reply(self, text: str) -> None:
+        await self.agent.client.send_message(self.agent.identity, self.chat_id, text)
+
+
+Handler = Callable[[Any], Awaitable[None]]
+
+
+class Agent:
+    """Hosts exactly one Salt agent identity. Register handlers with the
+    decorators, then either mount `asgi_app()` behind a public URL, or call
+    `run_socket()` from a laptop with none."""
+
+    def __init__(
+        self,
+        *,
+        host: str,
+        api_key: str,
+        public_key: str,
+        private_key: str,
+        passphrase: str = "",
+        agent_id: str = "",
+        verify_signatures: bool = True,
+        signature_tolerance_seconds: int = 300,
+        client: AsyncSaltClient | None = None,
+        logger: logging.Logger | None = None,
+    ) -> None:
+        self.identity = Identity(
+            api_key=api_key, public_key=public_key, private_key=private_key,
+            passphrase=passphrase, agent_id=agent_id,
+        )
+        self.client = client or AsyncSaltClient(host)
+        self.verify_signatures = verify_signatures
+        self.signature_tolerance_seconds = signature_tolerance_seconds
+        self.webhook_secret: str | None = None
+        self._logger = logger or logging.getLogger("saltapp.agent")
+
+        self._handlers: dict[str, Handler] = {}
+        self._seen_delivery_ids = _BoundedSet()
+        self._ask_registry = _AskRegistry()
+        self._agent_to_agent_counts: dict[str, int] = {}
+        self._lane_room_of: dict[str, str] = {}
+
+    # -- registration --
+
+    def on_message(self, fn: Handler) -> Handler:
+        self._handlers["message"] = fn
+        return fn
+
+    def on_card_interaction(self, fn: Handler) -> Handler:
+        self._handlers["card_interaction"] = fn
+        return fn
+
+    def on_chat_opened(self, fn: Handler) -> Handler:
+        self._handlers["chat_opened"] = fn
+        return fn
+
+    def on_invoice_paid(self, fn: Handler) -> Handler:
+        self._handlers["invoice_paid"] = fn
+        return fn
+
+    def on_handoff_confirmed(self, fn: Handler) -> Handler:
+        self._handlers["handoff_confirmed"] = fn
+        return fn
+
+    def on_handoff_received(self, fn: Handler) -> Handler:
+        self._handlers["handoff_received"] = fn
+        return fn
+
+    # -- setup --
+
+    async def ensure_identity(self) -> Identity:
+        """Fills in `agent_id` and `webhook_secret` from salt-api if not
+        already known -- salt-api is the only authority on which id an
+        api-key belongs to."""
+        info = await self.client.who_am_i(self.identity.api_key)
+        if info.get("agent_id"):
+            self.identity.agent_id = str(info["agent_id"])
+        if info.get("webhook_secret"):
+            self.webhook_secret = str(info["webhook_secret"])
+        return self.identity
+
+    def health_extra(self) -> dict[str, Any]:
+        return {"agent_id": self.identity.agent_id or None}
+
+    # -- dispatch --
+
+    async def dispatch(self, event: Event) -> None:
+        """Route one verified Event: delivery-id dedupe, then to the event
+        family's own handling (mention rule + loop guard for `message`;
+        the rest are dispatched directly)."""
+        if event.delivery_id and self._seen_delivery_ids.seen(event.delivery_id):
+            return
+
+        try:
+            if event.type == "message":
+                await self._handle_message(event.body)
+            elif event.type == "card_interaction":
+                await self._handle_card_interaction(event.body)
+            elif event.type == "chat_opened":
+                await self._handle_chat_opened(event.body)
+            elif event.type == "invoice_paid":
+                await self._handle_invoice_paid(event.body)
+            elif event.type == "handoff_confirmed":
+                await self._call_simple_handler("handoff_confirmed", event.body)
+            elif event.type == "handoff_received":
+                await self._call_simple_handler("handoff_received", event.body)
+        except Exception as exc:  # noqa: BLE001
+            self._logger.error("[dispatch] handling %s failed: %s", event.type, exc)
+
+    def dispatch_sync(self, event: Event) -> None:
+        """Sync entry point for a sync web framework (Flask). Runs the same
+        async dispatch to completion on a fresh event loop."""
+        asyncio.run(self.dispatch(event))
+
+    async def _call_simple_handler(self, name: str, body: dict[str, Any]) -> None:
+        handler = self._handlers.get(name)
+        if handler is None:
+            return
+        await handler(body)
+
+    async def _handle_message(self, body: dict[str, Any]) -> None:
+        message = body.get("message") or {}
+        chat_meta = body.get("chat") or {}
+        chat_id = message.get("chat_id")
+        if message.get("event_type"):
+            return  # system events aren't prompts
+
+        sender = message.get("user") or {}
+        sender_id = sender.get("id")
+        if not sender_id:
+            return
+        if str(sender_id).lower() == str(self.identity.agent_id).lower():
+            return  # never reply to our own message (webhook loop-back)
+
+        text = message.get("message") or ""
+
+        # An ask() waiting on free text from this chat gets first refusal --
+        # it must not also be treated as a fresh prompt for on_message.
+        if self._ask_registry.try_resolve_message(chat_id, sender_id, text):
+            return
+
+        # GACM: another agent is declared active in this chat -- stay silent.
+        active_agent_id = chat_meta.get("active_agent_id")
+        if active_agent_id and str(active_agent_id).lower() != str(self.identity.agent_id).lower():
+            return
+
+        sender_is_agent = sender.get("account_type") == "Agent"
+        reply_count_key = str(chat_id).lower()
+        if sender_is_agent:
+            if await self._chat_has_non_observer_human(chat_id, chat_meta):
+                # The mention rule: an agent-authored message is only ours
+                # to answer when it @mentions us, same gate salt-api applies
+                # to whether the webhook is even sent in a group chat.
+                mentions = [str(m) for m in (message.get("mentions") or [])]
+                if not any(m.lower() == str(self.identity.agent_id).lower() for m in mentions):
+                    return
+            else:
+                limit = CONSULT_RUNAWAY_LIMIT if chat_meta.get("lane_kind") == "consult" else MAX_AGENT_TO_AGENT_REPLIES_PER_CHAT
+                count = self._agent_to_agent_counts.get(reply_count_key, 0) + 1
+                self._agent_to_agent_counts[reply_count_key] = count
+                if count > limit:
+                    self._logger.error("[chat %s] agent-to-agent reply cap reached; not auto-replying again.", chat_id)
+                    return
+        else:
+            self._agent_to_agent_counts.pop(reply_count_key, None)
+
+        handler = self._handlers.get("message")
+        if handler is None:
+            return
+
+        room_id = chat_meta.get("coaching_for_chat_id") or chat_id
+        ctx = MessageContext(
+            self, chat_id=chat_id, sender_id=sender_id, sender=sender, text=text,
+            room_id=room_id, chat_meta=chat_meta, raw_message=message,
+        )
+        await handler(ctx)
+
+    async def _chat_has_non_observer_human(self, chat_id: str, chat_meta: dict[str, Any]) -> bool:
+        inline_members = chat_meta.get("users")
+        members = inline_members
+        if not isinstance(members, list):
+            try:
+                members = await self.client.get_chat_members(self.identity.api_key, chat_id)
+            except Exception as exc:  # noqa: BLE001
+                self._logger.error("[chat %s] fetching members for mention-gating failed: %s", chat_id, exc)
+                return False
+        return any(m.get("account_type") != "Agent" and not m.get("observer") for m in members)
+
+    async def _handle_card_interaction(self, body: dict[str, Any]) -> None:
+        card_id = str(body.get("card_id"))
+        action_id = str(body.get("action_id"))
+        user = body.get("user") or {}
+        blocks = (body.get("state") or {}).get("blocks")
+
+        if self._ask_registry.try_resolve_card_interaction(card_id, action_id, user, blocks):
+            return
+
+        handler = self._handlers.get("card_interaction")
+        if handler is None:
+            return
+        ctx = CardInteractionContext(
+            self, chat_id=body.get("chat_id"), card_id=card_id, action_id=action_id, user=user, blocks=blocks,
+        )
+        await handler(ctx)
+
+    async def _handle_chat_opened(self, body: dict[str, Any]) -> None:
+        handler = self._handlers.get("chat_opened")
+        if handler is None:
+            return
+        chat = body.get("chat") or {}
+        ctx = ChatOpenedContext(
+            self, chat_id=body.get("chat_id") or chat.get("id"), chat=chat,
+            opened_by=body.get("opened_by") or {}, members=body.get("members") or [],
+        )
+        await handler(ctx)
+
+    async def _handle_invoice_paid(self, body: dict[str, Any]) -> None:
+        handler = self._handlers.get("invoice_paid")
+        if handler is None:
+            return
+        ctx = InvoicePaidContext(
+            self, chat_id=body.get("chat_id"), buyer=body.get("buyer") or {},
+            line_items=body.get("line_items") or [], amount=body.get("amount"),
+            is_top_up=bool(body.get("billing_account_id")), transfer_request_id=body.get("transfer_request_id"),
+        )
+        await handler(ctx)
+
+    # -- webhook mode --
+
+    def asgi_app(self) -> Any:
+        """A dependency-free ASGI3 app implementing the webhook (`POST /`)
+        and `GET /health`. Run it directly under uvicorn:
+
+            uvicorn.run(agent.asgi_app(), host="0.0.0.0", port=8000)
+        """
+        return create_asgi_app(
+            self.dispatch,
+            verify_signatures=self.verify_signatures,
+            secret=self.webhook_secret,
+            tolerance_seconds=self.signature_tolerance_seconds,
+            health_extra=self.health_extra(),
+        )
+
+    # -- socket mode --
+
+    def run_socket(
+        self,
+        *,
+        cursor_store: CursorStore | None = None,
+        poll_timeout: int = 25,
+        poll_limit: int = 100,
+    ) -> None:
+        """Blocking entry point for socket mode: no public URL needed. Sets
+        `users.delivery_mode = "socket"` on salt-api (idempotent), then
+        long-polls forever. Ctrl-C to stop."""
+        asyncio.run(self.run_socket_async(cursor_store=cursor_store, poll_timeout=poll_timeout, poll_limit=poll_limit))
+
+    async def run_socket_async(
+        self,
+        *,
+        cursor_store: CursorStore | None = None,
+        poll_timeout: int = 25,
+        poll_limit: int = 100,
+        stop: asyncio.Event | None = None,
+    ) -> None:
+        await self.ensure_identity()
+        try:
+            await self.client.set_delivery_mode(self.identity.api_key, "socket")
+        except Exception as exc:  # noqa: BLE001 -- an agent with a blank callback is socket by default anyway
+            self._logger.error("[socket] set_delivery_mode failed (continuing anyway): %s", exc)
+
+        socket_client = SocketClient(
+            self.client,
+            self.identity.api_key,
+            webhook_secret_provider=lambda: self.webhook_secret,
+            verify_signatures=self.verify_signatures,
+            tolerance_seconds=self.signature_tolerance_seconds,
+            cursor_store=cursor_store or MemoryCursorStore(),
+            poll_timeout=poll_timeout,
+            poll_limit=poll_limit,
+            logger=self._logger,
+        )
+        self._logger.info("[socket] listening as agent %s", self.identity.agent_id or "(unknown id)")
+        await socket_client.run(self.dispatch, stop=stop)
