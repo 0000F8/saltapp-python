@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "langchain-saltapp"
+version = "0.1.0"
+description = "LangChain integration for Salt (saltapp.ai): a BaseToolkit exposing Salt's chat/payment/card tools, plus a LangGraph interrupt() bridge that asks a human-in-the-loop question on Salt and resumes the graph on their answer."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+authors = [
+    { name = "0x0000F8", email = "0000F8@proton.me" },
+]
+maintainers = [
+    { name = "0x0000F8", email = "0000F8@proton.me" },
+]
+keywords = ["langchain", "langgraph", "saltapp", "salt", "agents", "human-in-the-loop", "tools"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+# LangChain no longer accepts new integrations as PRs to langchain-ai/*
+# repos (verified against the current contributing docs, 2026-09) -- a
+# partner package is an independent PyPI package you publish and maintain
+# yourself, then list via an "Integration listing" issue on
+# langchain-ai/docs. This package intentionally has NO logic of its own:
+# saltapp is the single source of truth for the toolkit and the interrupt
+# bridge (see saltapp/integrations/langchain.py in the parent repo); this
+# package just gives it the `langchain_saltapp` import name and
+# `langchain-saltapp` PyPI name LangChain's docs list partner packages
+# under, so `pip install langchain-saltapp` reads the way every other
+# LangChain integration does.
+dependencies = [
+    "langchain-core>=1.6",
+    "saltapp[langchain]>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://saltapp.ai"
+Repository = "https://github.com/0000F8/saltapp-python"
+Source = "https://github.com/0000F8/saltapp-python/tree/main/packages/langchain-saltapp"
+Issues = "https://github.com/0000F8/saltapp-python/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/langchain_saltapp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

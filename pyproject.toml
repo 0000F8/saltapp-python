@@ -38,6 +38,20 @@ dependencies = [
 [project.optional-dependencies]
 fastapi = ["fastapi>=0.100", "starlette>=0.27"]
 flask = ["flask>=2.3"]
+# Framework integrations (saltapp.integrations.<name>) -- see README.md's
+# "Integrations" section and each module's own docstring for what it builds.
+# Version floors below are what this release was verified against
+# (2026-09); each framework's own API is still moving, so pin an upper
+# bound in your own project if you need to freeze against churn.
+langchain = ["langchain-core>=1.6", "langgraph>=1.2"]
+crewai = ["crewai>=1.15"]
+pydantic_ai = ["pydantic-ai-slim>=2.45"]
+agno = ["agno>=3.0"]
+adk = ["google-adk>=2.9"]
+openai_agents = ["openai-agents>=0.22"]
+smolagents = ["smolagents>=1.26"]
+llamaindex = ["llama-index-core>=0.14"]
+camel = ["camel-ai>=0.2.90"]
 
 [dependency-groups]
 dev = [
@@ -48,6 +62,35 @@ dev = [
     "starlette>=0.27",
     "flask>=2.3",
     "httpx>=0.24",
+]
+# Every integration's dependencies, for running the FULL test suite
+# (including tests/integrations/) in one venv. `pip install -e ".[fastapi,flask]"`
+# alone skips these -- each integration test file `pytest.importorskip`s
+# its framework, so the core 81 tests still pass without any of this
+# installed.
+#
+# `pip install --group integrations-dev` as ONE resolve FAILS outright:
+# crewai pins openai<3, openai-agents pins openai>=3 -- a real conflict
+# between two frameworks' own dependencies, not something saltapp can fix.
+# instructor (a crewai dependency) wanting jiter<0.15 against
+# openai-agents' jiter>=0.17 is the same shape of problem. What this
+# release actually did (see HANDOFF.md): install each extra with a
+# SEPARATE `pip install` call in sequence, which lets a later package's
+# pin quietly win over an earlier one instead of refusing outright. Every
+# integration module still imports and its own tests pass under that
+# sequence. A real consumer installs ONE `saltapp[<framework>]` extra in
+# an otherwise-clean venv, where none of this applies.
+integrations-dev = [
+    "langchain-core>=1.6",
+    "langgraph>=1.2",
+    "crewai>=1.15",
+    "pydantic-ai-slim>=2.45",
+    "agno>=3.0",
+    "google-adk>=2.9",
+    "openai-agents>=0.22",
+    "smolagents>=1.26",
+    "llama-index-core>=0.14",
+    "camel-ai>=0.2.90",
 ]
 
 [project.urls]

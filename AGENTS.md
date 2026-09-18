@@ -31,6 +31,8 @@ assumes you've read that.
 | `saltapp.socket` | New (K2 contract in `design-fleet/runs/2026-09-17-distribution/LANES.md`) | `SocketClient`: long-polls `GET /api/v1/agent/updates`, verifies every envelope the same way a webhook is verified, backs off on transport errors. |
 | `saltapp.agent` | `webhook.ts`'s dispatch logic (mention rule, loop guard, GACM, dedupe) + this SDK's own `ask()`/`approve()` | `Agent`: decorators, dispatch, `run_socket()`, `asgi_app()`. |
 | `saltapp.integrations.fastapi` / `.flask` | New | Thin adapters mounting `Agent` into an app you already have. |
+| `saltapp.integrations._tools` | New | `SaltTools`: the six shared actions (`send_message`/`ask_human`/`request_payment`/`send_invoice`/`post_card`/`get_payment_status`) every framework integration below wraps -- one place the business logic and the `ask_human` HITL primitive live. |
+| `saltapp.integrations.{langchain,crewai,pydantic_ai,agno,adk,openai_agents,smolagents,llamaindex,camel}` | New | Nine framework integrations, each a thin shell over `_tools.SaltTools` -- see "Framework integrations" below. |
 
 ## Deliberate scope decisions (read this before "fixing" a gap)
 
@@ -91,6 +93,69 @@ the ask) while a handler is suspended inside `ctx.ask()`. `SocketClient.run()`
 schedules each event's dispatch as its own `asyncio.create_task`, not an
 inline `await`, for the same reason.
 
+## Framework integrations (`saltapp.integrations.<framework>`)
+
+Nine agent frameworks, each shipping (a) Salt's six tools as that
+framework's own tool primitive and (b) a bridge routing the framework's
+*own* human-in-the-loop mechanism through Salt's `ask()` (see
+`_tools.SaltTools.ask_human`, which every bridge calls). Read
+`README.md`'s "Integrations" section for the table of what each module
+exposes; this section is about how they were BUILT and what to check
+before trusting one.
+
+- **Every API shape below was verified against the real, currently
+  installed package** (as of 2026-09), not memory -- each module's own
+  top-of-file comment names exactly which doc pages or source files were
+  read. Agent-framework APIs move fast (LangGraph's `interrupt()` return
+  shape and `MemorySaver`->`InMemorySaver` rename, the OpenAI Agents SDK's
+  `function_tool`->`@tool` decorator shift, Agno's `updated_tools`->
+  `requirements` migration all happened recently) -- re-verify against
+  current docs before trusting an integration's shape without re-checking,
+  don't assume this file is still current a few months out.
+- **`_tools.py`'s `LineItemInput` pydantic model matters.** `send_invoice`'s
+  `line_items` parameter is typed `list[LineItemInput]`, not
+  `list[dict[str, Any]]`, specifically because the OpenAI Agents SDK's
+  strict-schema mode refuses a bare dict (`additionalProperties` isn't
+  allowed there) -- this was caught by actually running `build_tools()`
+  against a real `agents.Agent`, not by inspection. If you add a new tool
+  parameter that's a list of records, use a pydantic model the same way,
+  or you'll reintroduce the same failure the moment someone tries
+  `saltapp.integrations.openai_agents`.
+- **CrewAI's `human_input=True` bridge is built on an undocumented
+  extension point** (`crewai.core.providers.human_input.set_provider`,
+  verified present in crewai 1.15.22's actual source, absent from its
+  public docs). `saltapp.integrations.crewai.install_salt_human_input()`
+  raises a clear `ImportError` (not a confusing `AttributeError`) if a
+  future CrewAI version removes it, pointing at `SaltAskHumanTool` as the
+  documented, stable fallback. Don't upgrade crewai in this repo without
+  re-checking that hook still exists.
+- **Testing all nine in one venv hits real cross-framework dependency
+  conflicts** -- crewai pins `openai<3`, the `openai-agents` package pins
+  `openai>=3`; `instructor` (a crewai dependency) pins `jiter<0.15`,
+  `openai-agents` pulls `jiter>=0.17`. This release tested all nine by
+  installing each extra with its own `pip install` call, in sequence, in
+  one venv (each subsequent install's pins silently won over the
+  previous, and no runtime behavior actually broke) -- a single combined
+  `pip install --group integrations-dev` resolve FAILS outright on the
+  conflict. Building google-re2 (a crewai transitive dependency, via
+  cel-python) from source also failed on this machine's outdated Xcode
+  toolchain (no prebuilt wheel for this exact arm64/cp312 combination);
+  worked around by installing the last version with a prebuilt wheel
+  (`google-re2==1.1.20240702` from a `--only-binary` download) before
+  `pip install crewai`. See `HANDOFF.md` for the exact commands.
+- **`saltapp.socket`/`saltapp.agent.run_socket_async()` still use the OLD
+  socket-mode contract** (`poll_timeout=25` default, matching the K2
+  contract as it stood when the core SDK (lane `python`) was built).
+  `design-fleet/runs/2026-09-17-distribution/LANES.md` was revised
+  2026-09-18 (after this integrations lane started) to a short-poll
+  contract: `timeout` clamped server-side to 0..2s, Action Cable as the
+  primary push path, polling only as backlog catch-up. This still WORKS
+  (the server just clamps the requested 25s down to its real ceiling), but
+  every example in `examples/` and the README's socket-mode snippets
+  should move to the revised contract's adaptive-polling shape once the
+  `socket` lane's SDK-side change lands -- don't take `poll_timeout=25` in
+  this repo as the current recommendation.
+
 ## The webhook-signature test vector
 
 `tests/fixtures/webhook_signature_vector.json` is generated by
@@ -131,6 +196,20 @@ checks (`test_client.py`, `test_socket.py`), or direct exercises of
 (`test_agent.py`, `test_ask.py`). None of them stub the thing they claim to
 test.
 
+`tests/integrations/` adds 36 more (117 total) against each framework's
+REAL classes -- `pytest.importorskip` at the top of each file means they
+no-op cleanly if you haven't installed that framework's extra, so the core
+81 keep passing on their own. Every HITL bridge test drives the actual
+async round trip: it starts the bridge as a background task/thread, waits
+briefly, resolves the pending `saltapp.agent.Agent._ask_registry` entry
+the same way a real card tap or chat message would, then asserts on the
+resumed value in THAT framework's own expected shape (a `RunState`, a
+`DeferredToolResults`, a `types.FunctionResponse`, ...) -- see
+`tests/integrations/conftest.py`'s `make_agent`/`recording_card_handler`
+helpers, reused from `tests/test_ask.py`'s pattern. Install one or a few
+frameworks' extras (see the "Framework integrations" section above for why
+not all nine at once) before running these.
+
 ## Things a future pass should look at
 
 - **No real end-to-end smoke test against a live salt-api.** Everything is
@@ -153,3 +232,31 @@ test.
   names) -- if salt-api adds a new webhook event family, check `classify()`
   still does something sane with it (falls through to `"unknown"`, which
   `Agent.dispatch()` currently just ignores).
+- **No integration was run against a live model + live salt-api together.**
+  Every integration test drives the framework's REAL classes but a FAKE
+  model (pydantic-ai's `FunctionModel`, the OpenAI Agents SDK's
+  `ScriptedModel`, hand-built fakes for Agno's paused `RunResponse`) and a
+  mocked Salt transport -- proving the wiring is correct, not that
+  `examples/adk_confirmation.py` actually works end-to-end against Gemini
+  and a running `salt-api`. Before calling any one integration
+  production-ready, run its example by hand per the "UAT steps" in
+  `HANDOFF.md`.
+- **The socket-mode contract examples/README use is one revision behind**
+  -- see this file's "Framework integrations" section's last bullet.
+  `saltapp.socket`/`Agent.run_socket_async()` themselves are untouched by
+  this lane (out of scope: that's the `socket` lane's SDK-side code to
+  revise), but every `examples/*.py` file and the README's socket-mode
+  snippets should move to the revised adaptive-polling shape once that
+  lane's change lands here.
+- **`README.md`'s "Custody" quickstart still shows `create_agent(...,
+  {"private_key": keys.private_key, ...})`** -- flagged in
+  `design-fleet/runs/2026-09-17-distribution/FOLLOWUPS.md` ("READMEs that
+  still describe server-held keys") by the separate `custody` lane, which
+  is changing salt-api to refuse a private key over the wire at all. This
+  integrations lane did NOT touch that section: the exact new
+  registration contract depends on the custody lane's still-in-progress
+  server change, which wasn't available to verify against. Whoever lands
+  the custody lane's change should update that quickstart in the same
+  pass (and note it doesn't affect anything in `saltapp.integrations.*` --
+  every integration and example here builds an `Agent` from
+  already-issued credentials, never calls `create_agent`).

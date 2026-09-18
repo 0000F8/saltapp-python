@@ -613,3 +613,15 @@ class Agent:
         )
         self._logger.info("[socket] listening as agent %s", self.identity.agent_id or "(unknown id)")
         await socket_client.run(self.dispatch, stop=stop)
+
+
+def tool_context(agent: "Agent", chat_id: str) -> _BaseContext:
+    """Public constructor for a bare `_BaseContext` (`post_card`/`ask`/
+    `approve`/`request_payment`), scoped to one chat, with no live message
+    event backing it. This is what `saltapp.integrations._tools.SaltTools`
+    (and, through it, every `saltapp.integrations.<framework>` module)
+    builds its tool functions on -- a framework's own tool-calling loop
+    doesn't hand us a `MessageContext`, only "the chat this agent run is
+    answering in", so this is the smallest context that still gets
+    `ask()`'s card-or-text correlation for free."""
+    return _BaseContext(agent, chat_id)

@@ -3,241 +3,362 @@
 (The coordinator removes this file before publishing -- it's build-round
 notes, not user-facing documentation.)
 
-Lane: `python` (kernel piece K4), 2026-09-18. New repo at
-`/Users/z1ggy/projects/salt/saltapp-python`, git-initialized and committed
-locally. **Not published anywhere** -- no GitHub repo created, nothing
-pushed, nothing uploaded to PyPI, per the lane rules in
-`design-fleet/runs/2026-09-17-distribution/LANES.md`.
+Lane: `py-integrations` (overnight run, `design-fleet/runs/2026-09-17-distribution/`),
+2026-09-18. Repo `/Users/z1ggy/projects/salt/saltapp-python`, branch
+`integrations`, on top of the existing `main` (the `python` lane's core
+SDK, already committed). **This file replaces the previous HANDOFF.md**
+(that lane's own build notes, superseded -- its content is still in git
+history on `main` if you need it; the core SDK it describes is done and
+untouched by this lane except one small addition to `agent.py`, noted
+below). Nothing published, pushed, or PR'd, per the lane rules.
 
-## What changed / what's here
+## What changed
 
-A brand-new package, `saltapp` (PyPI name; import name `saltapp`), Python
-SDK for Salt agents, MIT, Python >= 3.10, `pyproject.toml` + hatchling +
-`src/` layout, typed (`py.typed`).
+Nine framework integrations under `src/saltapp/integrations/`, each
+shipping (a) Salt's six tools (`send_message`, `ask_human`,
+`request_payment`, `send_invoice`, `post_card`, `get_payment_status`) as
+that framework's own tool primitive, and (b) a bridge routing the
+framework's own human-in-the-loop mechanism through Salt's `ask()`:
 
 ```
-saltapp-python/
-  pyproject.toml
-  README.md          -- install, quickstart, socket-mode + webhook examples
-  AGENTS.md           -- module map, scope decisions, what a future pass should check
-  LICENSE             -- MIT, copyright 0x0000F8
-  HANDOFF.md          -- this file
-  .github/workflows/publish.yml  -- PyPI Trusted Publishing, see below
-  scripts/generate_ts_vector.cjs -- regenerates the signature test vector
-  src/saltapp/
-    __init__.py        client.py       crypto.py    cards.py
-    webhook.py          socket.py       agent.py     identity.py   errors.py
-    integrations/{fastapi,flask}.py
-  tests/  -- 81 tests, all real assertions (see below)
+src/saltapp/integrations/
+  _tools.py          # NEW -- shared SaltTools + pydantic input schemas + build_plain_functions()
+  langchain.py        # SaltToolkit + ask_via_interrupt()/SaltInterruptRunner (LangGraph)
+  crewai.py            # salt_tools() (BaseTool subclasses) + install_salt_human_input()
+  pydantic_ai.py        # build_toolset() (FunctionToolset) + resolve_deferred_approvals()
+  agno.py               # SaltToolkit (agno.tools.Toolkit) + resolve_agno_run()
+  adk.py                # build_tools() (FunctionTool) + resolve_confirmation_via_salt()
+  openai_agents.py      # build_tools() (@tool) + resolve_interruptions()
+  smolagents.py         # build_tools() (Tool instances) -- ask_human IS the bridge
+  llamaindex.py         # SaltToolSpec (BaseToolSpec) -- ask_human/aask_human IS the bridge
+  camel.py              # SaltHumanToolkit -- drop-in for camel.toolkits.HumanToolkit
+
+packages/
+  langchain-saltapp/            # thin partner package, LangChain's naming convention
+    pyproject.toml, README.md, src/langchain_saltapp/__init__.py
+  llama-index-tools-saltapp/    # thin partner package, LlamaHub's naming convention
+    pyproject.toml, README.md, llama_index/tools/saltapp/__init__.py
+
+examples/   # one runnable cookbook per framework, ~50-85 lines each, socket mode
+  langgraph_interrupt.py        # THE FLAGSHIP: pauses, asks on Salt with buttons, resumes on tap
+  crewai_human_input.py
+  pydantic_ai_deferred_approval.py
+  agno_confirmation.py
+  adk_confirmation.py
+  openai_agents_approval.py
+  smolagents_tools.py
+  llamaindex_agent.py
+  camel_human_toolkit.py
+
+tests/integrations/   # 36 new tests (117 total with the core 81)
+  conftest.py, test_langchain.py, test_crewai.py, test_pydantic_ai.py,
+  test_agno.py, test_adk.py, test_openai_agents.py, test_smolagents.py,
+  test_llamaindex.py, test_camel.py
 ```
 
-Modules, briefly (full detail in AGENTS.md):
+Plus small edits to existing files:
+- **`src/saltapp/agent.py`**: added ONE new public function,
+  `tool_context(agent, chat_id) -> _BaseContext`, at the end of the file
+  (12 lines). It's the public constructor every integration's `SaltTools`
+  uses to get `ask()`/`post_card()`/`request_payment()` scoped to a chat
+  with no live `MessageContext` behind it (a framework's tool-calling loop
+  doesn't hand us one). Nothing else in `agent.py` changed; all 81
+  existing tests still pass unmodified.
+- **`pyproject.toml`**: added nine `[project.optional-dependencies]`
+  extras (`langchain`, `crewai`, `pydantic_ai`, `agno`, `adk`,
+  `openai_agents`, `smolagents`, `llamaindex`, `camel`) and one
+  `[dependency-groups]` group (`integrations-dev`, everything at once --
+  read its comment before using it, see "Known conflicts" below).
+- **`README.md`**: new "## Integrations" section (table of all nine +
+  the thesis paragraph), a note in "## Development" about running
+  `tests/integrations/`.
+- **`AGENTS.md`**: new "## Framework integrations" section (build notes,
+  the `LineItemInput` schema gotcha, the CrewAI undocumented-hook caveat,
+  the dependency-conflict story, the socket-contract-revision note), a
+  paragraph in "## Testing", three new bullets in "## Things a future
+  pass should look at".
 
-- **`saltapp.client`**: `SaltClient` (sync, httpx) / `AsyncSaltClient`
-  (async) -- messages (list/send with encryption), chats, cards
-  (post/update), payment requests, invoices, products, usage, hand-offs.
-  `SaltApiError` carries the server's own `{"error": "..."}` sentence.
-- **`saltapp.crypto`**: keygen (EdDSA/Ed25519 + ECDH/Curve25519, matching
-  openpgp.js's `curve25519` keys), multi-recipient encrypt, decrypt,
-  fingerprint, attachment AES-GCM decrypt. Uses `pgpy` + `cryptography`.
-- **`saltapp.cards`**: block builders matching salt-api's `card.rb`
-  validator exactly (same limits, same `pay`/`handoff` action_type shapes).
-- **`saltapp.webhook`**: HMAC verification (ported from
-  `salt-call-agent-example/webhook_auth.py`), framework-neutral
-  `handle(headers, body) -> Event`, a dependency-free ASGI3 app, plus thin
-  FastAPI/Flask adapters in `saltapp.integrations` (behind `[fastapi]`/`[flask]`
-  extras).
-- **`saltapp.socket`**: `SocketClient`, a long-poll client implementing the
-  K2 socket-mode contract from `LANES.md` (`GET /api/v1/agent/updates`),
-  verifying every envelope's signature, with backoff on transport errors.
-  `MemoryCursorStore` / `FileCursorStore`.
-- **`saltapp.agent`**: `Agent` -- hosts one identity, decorators
-  (`on_message`, `on_card_interaction`, `on_chat_opened`, `on_invoice_paid`,
-  `on_handoff_confirmed`, `on_handoff_received`), the mention rule + loop
-  guard + GACM + delivery-id dedupe (ported from `salt-agent-sdk/src/webhook.ts`'s
-  dispatch logic), `ctx.reply/post_card/update_card/request_payment/ask/approve`,
-  `run_socket()`, `asgi_app()`.
-
-## Deliberate scope narrowing (read AGENTS.md's "Deliberate scope
-decisions" section for the full reasoning)
-
-This is parity with **the essentials** the task named, not a line-for-line
-port of `salt-agent-sdk`. Specifically not built: multi-identity hosting
-(`identities.ts`/`reconcile.ts`), delegation provenance trails
-(`delegations.ts`), session notes (`sessions.ts`), the work-report wire
-format (`work.ts`), and the 17-tool `actions.ts` LLM tool-calling wrapper.
-`saltapp.client` gives you the underlying REST calls; wiring them into a
-specific model's tool-calling shape is left to the caller, same as this
-SDK has zero opinion about which model you use at all.
-
-**`ctx.ask()`/`ctx.approve()` are this SDK's own addition** -- there is no
-`ask()` in the TS SDK as of this writing (`salt-agent-sdk`'s dist/src has
-no such export; verified by grep before building). The task prompt's phrase
-"exactly like the TS lane's ask" refers to a *planned* primitive described
-in `design-fleet/runs/2026-09-17-distribution/page/narrative.html`'s "K3 ·
-ASK" kernel piece, which names a not-yet-built server-side `asks` resource.
-Since `LANES.md` (my actual contract) only specifies the K2 socket-mode
-contract and says nothing about a K3 `asks` endpoint, I built `ask()`
-entirely client-side on primitives that already exist and are documented
-in the workspace `CLAUDE.md`: post a card, correlate whichever answers it
-first (a card tap or, if `free_text=True`, a plain message) via an
-in-process registry, with a timeout. No new server endpoint assumed. If a
-real `asks` resource ships later, `ask()`'s public signature is designed to
-survive the implementation moving onto it -- see AGENTS.md's note.
+No migrations (this is a pure-Python SDK, no database). No changes to
+`saltapp.client`, `saltapp.crypto`, `saltapp.cards`, `saltapp.webhook`,
+`saltapp.socket`, or the FastAPI/Flask adapters.
 
 ## How to test
 
 ```bash
 cd saltapp-python
-python3 -m venv .venv && source .venv/bin/activate   # .venv is gitignored, already created+installed
-pip install -e ".[fastapi,flask]"
-pip install pytest pytest-asyncio build twine
-pytest                       # 81 passed
-python -m build              # sdist + wheel
-python -m twine check dist/* # both PASSED
+source .venv/bin/activate     # already created + has every framework installed (see below)
+pytest -q                     # 117 passed
+python -m build                # sdist + wheel for saltapp itself (unaffected by this lane)
 ```
 
-Already run in this session: all of the above, green. `.venv/` exists in
-the repo directory but is gitignored, so a fresh clone needs the same
-three `pip install` lines.
+The venv at `.venv/` (gitignored) already has all nine frameworks
+installed, in this order (matters -- see "Known conflicts" below):
+`langchain-core`, `langgraph`, `google-re2==1.1.20240702` (pinned
+prebuilt wheel, BEFORE crewai), `crewai`, `pydantic-ai-slim`, `agno`,
+`google-adk`, `openai-agents`, `smolagents`, `llama-index-core`,
+`camel-ai`. A fresh clone reproduces it with (roughly) that same
+sequence; see the exact commands in "Known conflicts."
 
-### The TS-compatibility vector
+Every integration module and its tests were run and verified with the
+REAL framework installed and imported -- not just read from docs. In
+particular, `tests/integrations/test_openai_agents.py` drives a full
+`Runner.run()` against `agents.testing.ScriptedModel` (a real scripted
+model backend, no OpenAI API key needed) through an actual
+`needs_approval=True` interruption and back; `tests/integrations/test_langchain.py`
+drives a real compiled LangGraph graph through a real `interrupt()`/
+`Command(resume=...)` pause and resume. Every "times out" test asserts
+`saltapp.AskTimeout` actually raises (or, for CAMEL's console-compatible
+method which has no timeout parameter, exercises the same 120s-default
+code path directly through `_salt.ask_human(timeout_seconds=...)` rather
+than blocking a real thread for two minutes -- see that test file's
+comment).
 
-`tests/fixtures/webhook_signature_vector.json` is not hand-computed --
-`scripts/generate_ts_vector.cjs` spins up the REAL compiled
-`salt-agent-sdk/dist/webhook.js`'s `createWebhookServer` (that sibling repo
-already had `dist/` built and `node_modules/` installed in this
-workspace), POSTs real signed HTTP requests at it, and records that
-running TypeScript server's own accept/reject verdict for five cases
-(valid, tampered digest, stale timestamp, wrong secret, missing header).
-`tests/test_webhook_vector.py` asserts `saltapp.webhook.verify_signature`
-agrees with all five, byte-for-byte. Regenerate with
-`node scripts/generate_ts_vector.cjs` if either SDK's signature scheme
-ever changes -- rebuild `salt-agent-sdk` first (`npm run build` there) if
-its `dist/` is stale.
+### Known conflicts (read before reinstalling from scratch)
 
-I hit one subtlety worth flagging: the "valid, fresh timestamp" vector is
-only valid for 300s from the moment it's generated (that's the whole point
-of the replay window). A naive fixture would start failing on its own five
-minutes after being committed. Fixed by recording `now_unix` (the instant
-the generator built each vector) and having the Python test pass
-`now=vector["now_unix"]` to `verify_signature`, replaying at the exact
-historical instant the TS SDK evaluated it rather than at real wall-clock
-time. This makes the fixture permanently reproducible.
+1. **`google-re2` (a `crewai` -> `cel-python` transitive dependency) has
+   no prebuilt wheel for this machine's arm64/cp312 combination**, and
+   building it from source fails on this machine's outdated Xcode
+   (14.0.1 -- too old for the C++17 the sdist needs, and missing
+   `pybind11` headers). Worked around by installing the last version
+   with a prebuilt wheel FIRST:
+   ```bash
+   pip install --only-binary=:all: "google-re2==1.1.20240702"
+   pip install crewai
+   ```
+   If the coordinator's real build machine has a current Xcode/clang,
+   this workaround is unnecessary -- `pip install crewai` alone should
+   build `google-re2` from source fine there.
+2. **`crewai` pins `openai<3`; `openai-agents` pins `openai>=3`.** A
+   single combined resolve (`pip install --group integrations-dev`, or
+   any tool that does one real backtracking resolve of everything at
+   once) FAILS outright with `ResolutionImpossible` -- verified by
+   running exactly that command. Installing each extra with its own
+   separate `pip install <extra>` call, in sequence, in one venv
+   (what this lane actually did) works: pip doesn't re-validate the
+   whole transitive graph on each subsequent install, so a later
+   package's pin quietly wins. Every integration module still imports
+   correctly and every integration's own tests still pass under that
+   final combined state -- I re-ran `pytest tests/integrations/ -q`
+   after all nine were installed and got 36/36 green. `instructor` (a
+   crewai dependency, wants `jiter<0.15`) vs `openai-agents` (wants
+   `jiter>=0.17`) is the same shape of conflict, same resolution.
+3. **This is a real, load-bearing fact for anyone packaging `saltapp`
+   with multiple integration extras at once** (e.g. a Docker image with
+   `pip install "saltapp[crewai,openai_agents]"` in one `RUN` line) --
+   that single-resolve install would fail the same way `--group
+   integrations-dev` did. A real consumer should expect to run each
+   framework in its own venv/container, which is normal practice for
+   competing agent frameworks anyway, but it's worth stating plainly
+   here rather than discovering it during a Docker build.
+
+## The `LineItemInput` schema fix (a real bug this lane caught and fixed)
+
+`_tools.py`'s `build_plain_functions()`'s `send_invoice` tool originally
+typed `line_items: list[dict[str, Any]]` (mirroring the core SDK's own
+`client.create_invoice` signature). Running `saltapp.integrations.openai_agents.build_tools()`
+against a REAL `agents.Agent` failed immediately:
+
+```
+agents.exceptions.UserError: additionalProperties should not be set for
+object types. This could be because you're using an older version of
+Pydantic, or because you configured additional properties to be allowed.
+```
+
+The OpenAI Agents SDK's strict-schema mode refuses a bare
+`dict[str, Any]` parameter (no fixed properties = `additionalProperties`
+in the generated JSON schema, which strict mode disallows). Fixed by
+typing it `list[LineItemInput]` (a pydantic model already defined in
+`_tools.py` for the class-based frameworks) instead, flattening back to
+plain dicts inside the function body before the REST call. This is a
+better fix than a special case for one framework -- it also makes the
+schema LlamaIndex/ADK/smolagents/CAMEL generate for `send_invoice` more
+precise (named fields with descriptions, not an opaque object). Re-ran
+every other framework's tests after the change; all still green. If you
+add a new tool parameter that's "a list of records," use a pydantic model
+the same way or you'll reintroduce this exact failure the moment someone
+touches `saltapp.integrations.openai_agents`.
 
 ## CLAUDE.md paragraph I'd add (once this is published)
 
-> **`saltapp` (Python SDK)** — Python counterpart to `salt-agent-sdk`
-> (`~/projects/salt/saltapp-python`, PyPI `saltapp`, MIT): sync/async REST
-> client, PGP crypto (pgpy), webhook verification with FastAPI/Flask
-> adapters, a long-poll socket-mode client for agents with no public URL,
-> and an `Agent` helper (`on_message`/`on_card_interaction`/...,
-> `ctx.ask()`/`ctx.approve()` for human-in-the-loop questions built on
-> cards). `ctx.ask()` has no TS SDK equivalent yet and assumes no unbuilt
-> server endpoint — see its own `AGENTS.md` if that changes.
+> **`saltapp` integrations** (`saltapp.integrations.<framework>`, nine
+> agent frameworks) — each ships Salt's six actions (message, ask a
+> human, request payment, invoice, post a card, check payment status) as
+> that framework's own tool primitive, plus a bridge routing the
+> framework's own human-in-the-loop mechanism (LangGraph `interrupt()`,
+> CrewAI's `human_input=True`, Pydantic AI's deferred-tool approval,
+> Agno's `requires_confirmation`/`requires_user_input`, ADK's
+> `ToolConfirmation`, the OpenAI Agents SDK's `needs_approval`) through
+> Salt's own `ask()` — so the human answers where they already are, never
+> a console prompt or a second inbox. `langchain-saltapp` and
+> `llama-index-tools-saltapp` also exist as standalone partner packages
+> (`packages/`) matching those two ecosystems' own naming conventions;
+> both are thin re-exports, saltapp itself stays the one source of truth.
 
 ## One-line "what's new" candidate
 
 Internal only (a developer-facing SDK release, not a user-facing product
-change) -- **do not add a line to `salt-fe/src/whatsNew.js`** for this.
+change) — **do not add a line to `salt-fe/src/whatsNew.js`** for this,
+same as the core SDK's own HANDOFF said.
 
-## UAT steps (once someone can run this against a real salt-api)
+## UAT steps
 
-This was built and tested entirely against `httpx.MockTransport` and the
-compiled TS SDK's signature logic -- **nobody has run it against a live
-Rails server yet.** Before calling it done-done:
+Every integration was verified with the REAL framework's classes against
+a MOCKED Salt transport (`httpx.MockTransport`) and, where the framework
+supports it, a REAL scripted/fake model backend (OpenAI Agents SDK's
+`ScriptedModel`, pydantic-ai's `FunctionModel`) -- see "How to test"
+above. **Nobody has run any of these against a live `salt-api` + a real
+LLM provider together.** Before calling any ONE integration
+production-ready:
 
-1. `pip install -e .` this package into a scratch venv.
-2. Register a real `SALT-...` test agent (per the workspace's test-account
-   convention) against a local `salt-api` using the README's "Quickstart:
-   register an agent" snippet.
-3. Run the README's socket-mode example against that agent; send it a
-   message from the Salt web app; confirm it replies.
-4. Try `ctx.ask()` with `options=[...]` from a real chat: post a message
-   that triggers it, confirm the card appears, tap a button, confirm the
-   handler resumes with the right answer.
-5. Try the webhook path (`agent.asgi_app()` under uvicorn, behind ngrok or
-   similar) the same way.
+1. Register a real `SALT-...` test agent (per the workspace's naming
+   convention) against a local or staging `salt-api`.
+2. `pip install -e ".[<framework>]"` for the one you're checking.
+3. Export `SALT_API_KEY`/`APP_PUBLIC_KEY`/`APP_PRIVATE_KEY`/`PGP_PASSPHRASE`
+   and whatever model-provider key that example needs (each
+   `examples/*.py` file's docstring says which).
+4. `python examples/<name>.py`, then message the agent from the Salt app
+   per that file's docstring and confirm the HITL round trip actually
+   works end to end (the question/card really appears in the chat, a tap
+   or reply really resumes it).
+5. **The LangGraph flagship is the one to check first** (`langgraph_interrupt.py`)
+   -- it's the example the "Integrations" README section and the task
+   brief both call out by name.
 
 ## What's left / not done
 
-- **No live salt-api smoke test** (see UAT above) -- this is the biggest
-  open item. Everything here is unit/integration-tested against mocks and
-  the compiled TS SDK, never against a running Rails server.
-- **No multi-identity hosting**, **no `actions.py` tool-calling wrapper**,
-  **no sessions/delegation-trail/work-report parity** -- all deliberate,
-  all explained in AGENTS.md's scope section. Not blocked, just out of
-  scope for this pass.
-- **PyPI publishing is not set up yet** -- see the Trusted Publishing setup
-  below; this needs the PyPI project owner (the human) to do a one-time
-  step before `.github/workflows/publish.yml` can succeed.
-- Flask adapter runs each webhook's async handler via a fresh
-  `asyncio.run()` per request (documented in AGENTS.md) -- correct but not
-  fast; fine for reference/hobby scale.
+- **No live salt-api + live LLM smoke test** for any of the nine (see
+  UAT above) — this is the biggest open item, same shape as the core
+  SDK's own outstanding item.
+- **Combined-extras installs are genuinely broken** (crewai vs
+  openai-agents' `openai` pin) — not a bug to fix in saltapp; documented
+  in `pyproject.toml`, `AGENTS.md`, and `README.md` so nobody rediscovers
+  it the hard way.
+- **The socket-mode contract these examples use is one revision behind.**
+  `LANES.md` was revised 2026-09-18 (after this lane started) to a
+  short-poll contract (`timeout` clamped 0..2s server-side, Action Cable
+  as the primary push path). `saltapp.socket`/`Agent.run_socket_async()`
+  themselves are untouched here (that's the `socket` lane's own SDK-side
+  code) and still default to `poll_timeout=25`, which still works (the
+  server just clamps it down) but isn't the current recommended shape.
+  Every `examples/*.py` file inherits that same "works but dated" default
+  through `agent.run_socket_async()` — revisit once the `socket` lane's
+  SDK-side change lands.
+- **`README.md`'s pre-existing "Custody" quickstart still sends
+  `private_key` to `create_agent(...)`** — flagged in
+  `design-fleet/runs/2026-09-17-distribution/FOLLOWUPS.md` ("READMEs that
+  still describe server-held keys") by the separate `custody` lane, which
+  is changing salt-api to refuse a private key over the wire at all. I
+  deliberately did NOT touch that section: the correct new registration
+  contract depends on that lane's still-in-progress server change, which
+  I have no visibility into from here, and guessing at it risks shipping
+  a WRONG example rather than an outdated one. None of `saltapp.integrations.*`
+  or any new example is affected — every integration builds an `Agent`
+  from already-issued credentials and never calls `create_agent`. Whoever
+  lands the custody change should fix that quickstart in the same pass.
+- **CrewAI's `human_input=True` bridge rides an undocumented extension
+  point** (`crewai.core.providers.human_input.set_provider`, real in
+  1.15.22's source, absent from public docs) — `install_salt_human_input()`
+  raises a clear `ImportError` if a future CrewAI version removes it, and
+  `SaltAskHumanTool` is the documented fallback, but re-verify this
+  specific hook before bumping the `crewai` extra's floor.
+- **`llama-index-tools-saltapp`'s actual LlamaHub listing process is
+  unresolved** (see "Listing steps" below) — LlamaHub itself now redirects
+  to `developers.llamaindex.ai` and I could not find a documented
+  replacement submission process (repeated 404s on plausible paths, per
+  the research pass); the package exists and imports correctly, but "how
+  it gets discovered" beyond a plain PyPI listing is an open question.
 
-## Publishing (for the coordinator, when ready)
+## Listing / PR steps for each framework (as requested)
 
-Two options; Trusted Publishing is what `.github/workflows/publish.yml`
-is wired for and is what PyPI recommends (no long-lived token to leak).
+Verified against each project's current (2026-09) docs/source directly —
+not memory. Where a process is genuinely undocumented or unclear, that's
+stated plainly rather than guessed.
 
-### Option A: PyPI Trusted Publishing via GitHub Actions (what's wired up)
+### LangChain integrations docs
+LangChain's current contributing docs state plainly: **"New integrations
+are not accepted as pull requests to langchain-ai repositories."**
+`langchain-saltapp` is published independently (PyPI + its own repo/dir,
+`packages/langchain-saltapp/` here) and then LISTED:
+- **Under ~50k monthly downloads**: open an "Integration listing" issue
+  on `langchain-ai/docs` (GitHub). Automation adds a row to
+  `integration_external_docs.yaml` (`name`, `pypi`, `docs_url`, capability
+  flags like `stream`/`tool_calling`) that links out to this package's own
+  README/docs — no hosted page.
+- **Over ~50k downloads, or maintainer-featured**: eligible for a hosted
+  MDX page built from `src/oss/python/integrations/tools/TEMPLATE.mdx` in
+  that same docs repo.
+- The only PR that should ever go to a `langchain-ai` repo for this is the
+  docs-listing one (or, later, the hosted-page one) — never a PR adding
+  `langchain-saltapp`'s actual code to their monorepo.
 
-One-time setup on PyPI, BEFORE the first release (needs a human with PyPI
-account access -- this cannot be done from here):
+### LlamaHub
+`run-llama/llama_index`'s current `CONTRIBUTING.md`: **"we are no longer
+accepting new integration packages in this repository... PRs that add a
+new `pyproject.toml` will be automatically closed."** `llamahub.ai` itself
+now just redirects with "LlamaHub has moved. Browse LlamaIndex
+integrations at developers.llamaindex.ai." I could not find a documented
+replacement submission process on that site (repeated 404s on plausible
+paths during research) — **this is a genuinely open question**, not
+something I'm confident enough to prescribe steps for. `llama-index-tools-saltapp`
+(`packages/llama-index-tools-saltapp/`) follows the EXISTING naming/metadata
+convention (`[tool.llamahub]` in `pyproject.toml`, `import_path`,
+`class_authors`, matching e.g. `llama-index-tools-arxiv`'s shape) so it's
+ready the moment a real submission path becomes clear; for now, publishing
+it to PyPI under its own name is the actionable step, and "getting listed
+somewhere LlamaIndex users browse" needs a human to investigate
+`developers.llamaindex.ai` directly (or ask in LlamaIndex's Discord/GitHub
+discussions) rather than following stale docs.
 
-1. If the `saltapp` project doesn't exist on PyPI yet: go to
-   https://pypi.org/manage/account/publishing/ (or, on an existing project,
-   its "Publishing" settings page) and add a new **pending publisher**:
-   - PyPI project name: `saltapp`
-   - Owner: `0000F8` (the GitHub org)
-   - Repository name: `saltapp-python`
-   - Workflow filename: `publish.yml`
-   - Environment name: `pypi` (matches the `environment:` block in the
-     workflow -- this is optional but recommended; if you skip setting an
-     environment on PyPI's side, remove the `environment:` key from
-     `publish.yml` or the OIDC claim won't match).
-2. Push this repo to `github.com/0000F8/saltapp-python` (the coordinator's
-   job, not this lane's -- lane rules forbid creating the GitHub repo or
-   pushing).
-3. Cut a release: `git tag v0.1.0 && git push origin v0.1.0`, then
-   `gh release create v0.1.0 --title v0.1.0 --generate-notes` (or via the
-   GitHub UI). The `publish` workflow job runs only on `release: published`,
-   builds, checks with twine, and uploads via
-   `pypa/gh-action-pypi-publish` -- no token, no secret, just the
-   repo/workflow identity PyPI now trusts.
+### CrewAI tools
+`crewAIInc/crewAI-tools` (the formerly-separate tools repo) was **archived
+2025-11-10**; its README now points at the actively-maintained tools
+living under `lib/crewai-tools/` in the main `crewAIInc/crewAI` repo. That
+repo's contribution guidance for tools specifically is generic (fork,
+branch, PR) with no documented criteria for "official" tool status, no
+registration process, and no separate listing/directory found beyond the
+docs site's own Tools pages. **Actionable step**: `salt_tools()` (this
+lane's CrewAI tools) can be documented and published as an independent
+package the same shape as the two partner packages above (not built in
+this pass — the task named LangChain and LlamaIndex specifically for
+partner packages, not CrewAI), or offered via a PR to `crewAIInc/crewAI`'s
+`lib/crewai-tools/` docs describing it as a community tool — there's no
+stronger, more official path documented right now.
 
-### Option B: a plain API token (fallback, if Trusted Publishing setup is
-skipped or blocked)
+### ADK integrations page
+This one IS well-documented and straightforward: `google/adk-docs`
+has a real `docs/integrations/` directory (Markdown files, one per
+integration, e.g. GitHub, Daytona, AgentOps). To list Salt:
+1. Add `docs/integrations/saltapp.md` following the existing template
+   (frontmatter: catalog title, description, icon; body sections: use
+   cases, prerequisites, installation, agent usage examples, available
+   tools, resources).
+2. Add a square PNG logo under `docs/integrations/assets/`.
+3. Include a screenshot demonstrating the integration (e.g. the
+   confirmation flow landing in a Salt chat).
+4. Open a PR; that repo even ships `integration-create`/`integration-review`
+   agent skills to help draft and validate the submission before you open
+   it. Maintainers review for template/formatting compliance before
+   merging — no other approval gate documented.
 
-1. Create a PyPI API token scoped to the `saltapp` project (or an
-   account-wide one for the very first upload, before the project exists,
-   then narrow it).
-2. `export TWINE_USERNAME=__token__ TWINE_PASSWORD=pypi-...`
-3. From a clean `dist/` (`python -m build`): `twine upload dist/*`.
-4. If you want CI to do this instead of Option A, add the token as a
-   repository secret (e.g. `PYPI_API_TOKEN`) and replace the `publish` job's
-   steps with `twine upload` using
-   `env: TWINE_USERNAME: __token__ / TWINE_PASSWORD: ${{ secrets.PYPI_API_TOKEN }}`
-   -- Option A avoids storing this secret at all, so prefer it unless
-   there's a specific reason not to.
+### smolagents Hub
+No listing/review process at all — it's genuinely self-serve:
+`tool_instance.push_to_hub(repo_id, ...)` publishes as a Space repo under
+your own Hugging Face account/org; `Tool.from_hub(repo_id, trust_remote_code=True)`
+loads it back for anyone. **Do not push a tool built by
+`saltapp.integrations.smolagents.build_tools()` as-is** — see that
+module's `PUSH_TO_HUB_NOTE` (already in the code): it closes over a live
+`Agent` holding real credentials and a fixed `chat_id`. A shareable
+version would need its `forward()` methods to read `SALT_API_KEY`/etc.
+from the environment at call time instead, which is a separate,
+not-yet-built variant.
 
-Either way: this lane does not publish anything, per the lane rules. The
-above is written so the coordinator (or the human) can execute it directly.
-
-## Security notes
-
-- The webhook/socket signature scheme (HMAC-SHA256, `t=<ts>,v1=<hex>`, 300s
-  default tolerance, constant-time compare via `hmac.compare_digest`) is a
-  direct port of `webhook_auth.py`'s already-reviewed implementation, not
-  new cryptographic design. `hmac.compare_digest` is Python's own
-  constant-time comparator (equivalent to Node's `timingSafeEqual`, used by
-  both `webhook.ts` and `webhook_auth.py`).
-- PGP keys generated by `saltapp.crypto.generate_keypair` never leave the
-  process except as whatever the caller does with the returned strings; no
-  network call is made during key generation.
-- `saltapp.agent.Agent` holds the agent's private key and passphrase in
-  memory for the process's lifetime (same trust model `salt-call-agent-example`
-  and `salt-agent-sdk` already document) -- the README's "Custody" section
-  states this plainly for anyone deploying it.
-- No third-party telemetry, no analytics SDK, nothing phones home except
-  the Salt API the caller explicitly configured (`host=`).
+### OpenAI Agents SDK examples
+`openai/openai-agents-python`'s top-level `CONTRIBUTING.md` and
+`examples/README.md` are both generic (standard fork/branch/PR flow, a
+note to avoid committing real credentials in examples, a pointer at
+`AGENTS.md`/`tests/README.md`) — I found **no example-specific
+directory convention or acceptance criteria** beyond that. Actionable
+step: open a PR adding `examples/salt/` (mirroring this repo's own
+`examples/openai_agents_approval.py`) with a short README, following the
+same generic contribution flow as any other PR to that repo — there's
+nothing more specific documented to follow.

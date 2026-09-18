@@ -222,9 +222,68 @@ await agent.client.hand_off(agent.identity.api_key, ctx.chat_id, other_agent_id,
 | `saltapp.socket` | `SocketClient` (long-poll per the socket-mode contract), `MemoryCursorStore`, `FileCursorStore`. |
 | `saltapp.agent` | `Agent`: `@agent.on_message` / `on_card_interaction` / `on_chat_opened` / `on_invoice_paid` / `on_handoff_confirmed` / `on_handoff_received`, `ctx.reply()` / `post_card()` / `request_payment()` / `ask()` / `approve()`, `run_socket()`, `asgi_app()`. |
 | `saltapp.integrations.fastapi` / `.flask` | Thin adapters mounting an `Agent` into an app you already have. |
+| `saltapp.integrations.<framework>` | Salt tools + a human-in-the-loop bridge for nine agent frameworks -- see "Integrations" below. |
 
 See `AGENTS.md` for the module-by-module design notes and what's
 deliberately out of scope for this first release.
+
+## Integrations
+
+**The thesis: Salt is the human end of every agent.** Every agent
+framework already has a human-in-the-loop primitive -- a tool call that
+needs approval, a run that pauses for input, a "human_input" flag on a
+task -- and today it ends at a console `input()` prompt or a web inbox
+nobody's watching. Each integration below ships two things: (a) Salt's
+six actions (`send_message`, `ask_human`, `request_payment`,
+`send_invoice`, `post_card`, `get_payment_status`) as that framework's own
+tool primitive, and (b) a bridge that routes the framework's *own*
+approval/ask mechanism through Salt's `ask()`, so the human answers in the
+chat they're already in -- never a second inbox.
+
+The six tools' shared implementation lives in one place
+(`saltapp.integrations._tools.SaltTools`) so every framework file below is
+a thin shell: a schema (or plain function signature) plus a call into it.
+Install only the extra(s) you need:
+
+```bash
+pip install "saltapp[langchain]"      # + langgraph, for the interrupt() bridge
+pip install "saltapp[crewai]"
+pip install "saltapp[pydantic_ai]"
+pip install "saltapp[agno]"
+pip install "saltapp[adk]"            # Google Agent Development Kit
+pip install "saltapp[openai_agents]"  # the openai-agents package
+pip install "saltapp[smolagents]"
+pip install "saltapp[llamaindex]"
+pip install "saltapp[camel]"          # camel-ai
+```
+
+| Module | Tool shape | Human-in-the-loop bridge |
+|---|---|---|
+| `saltapp.integrations.langchain` | `SaltToolkit` (`BaseToolkit`) | `ask_via_interrupt()` + `SaltInterruptRunner` -- a LangGraph node calls `interrupt()` with a Salt question; the runner posts it, waits for the tap or reply, and resumes the graph with `Command(resume=answer)`. **The flagship example** -- `examples/langgraph_interrupt.py`. |
+| `saltapp.integrations.crewai` | `salt_tools()` (`BaseTool` subclasses) | `install_salt_human_input()` routes `Task(human_input=True)`'s feedback prompt through Salt via CrewAI's `HumanInputProvider` extension point -- real in crewai 1.15.22's source, but **undocumented**; the module's docstring says so plainly. `SaltAskHumanTool` is the documented, stable alternative if that hook ever moves. |
+| `saltapp.integrations.pydantic_ai` | `build_toolset()` (`FunctionToolset`) | `resolve_deferred_approvals()` answers a `DeferredToolRequests` pause (any tool marked `requires_approval=True`) by asking on Salt, returning the `DeferredToolResults` that resumes the run. |
+| `saltapp.integrations.agno` | `SaltToolkit` (`Toolkit`) | `resolve_agno_run()` drives a paused `RunResponse` through `requires_confirmation`/`requires_user_input`, asking on Salt for each, then calls `agent.continue_run(...)`. `request_payment`/`send_invoice` are confirmation-gated by default. |
+| `saltapp.integrations.adk` | `build_tools()` (`FunctionTool`s) | `resolve_confirmation_via_salt()` answers ADK's `require_confirmation=True` pause (the synthetic `adk_request_confirmation` call) by asking on Salt. |
+| `saltapp.integrations.openai_agents` | `build_tools()` (`@tool` function tools) | `resolve_interruptions()` answers the SDK's `needs_approval=True` interruptions (`ToolApprovalItem`s) by asking on Salt, then resumes via `RunState`. |
+| `saltapp.integrations.smolagents` | `build_tools()` (`Tool` instances) | `ask_human` IS the bridge -- the model calls it directly like any other tool; no separate approval framework to route. See `PUSH_TO_HUB_NOTE` before publishing a built tool to the HF Hub (it would close over your agent's credentials). |
+| `saltapp.integrations.llamaindex` | `SaltToolSpec` (`BaseToolSpec`) | Same as smolagents -- `ask_human`/`aask_human` are called directly by the model. Also published standalone as `llama-index-tools-saltapp` (`packages/llama-index-tools-saltapp/`), LlamaHub's own naming convention. |
+| `saltapp.integrations.camel` | `SaltHumanToolkit` (`BaseToolkit`) | Drop-in replacement for `camel.toolkits.HumanToolkit`: same `ask_human_via_console`/`send_message_to_user` method names, routed to Salt instead of the console. |
+
+`saltapp.integrations.langchain` also ships as the standalone
+`langchain-saltapp` package (`packages/langchain-saltapp/`), matching how
+LangChain's docs list partner packages. Both partner packages are thin
+re-exports -- all the logic stays in `saltapp` itself, so there's one
+place to fix a bug, not two.
+
+Runnable cookbooks for all nine live in `examples/` (`langgraph_interrupt.py`
+is the flagship: a graph that pauses, asks a human on Salt with buttons,
+and resumes on the tap). Every example runs in socket mode -- register a
+Salt agent, export its credentials, `python examples/<name>.py`, no public
+URL needed.
+
+Each integration's own module docstring documents exactly which docs/source
+it was verified against and any version-specific caveats (framework APIs
+here move fast).
 
 ## Links
 
@@ -240,3 +299,20 @@ pip install pytest pytest-asyncio build
 pytest
 python -m build
 ```
+
+To also run the integration tests (`tests/integrations/`), install
+whichever frameworks you want to exercise -- each test file
+`pytest.importorskip`s its framework, so the core suite still passes
+without any of them:
+
+```bash
+pip install -e ".[langchain]"   # one extra at a time is the safe path
+pytest
+```
+
+All nine CAN be installed into one venv sequentially (that's how this
+release was tested -- see HANDOFF.md), but a single clean dependency
+resolve of the whole `integrations-dev` group fails: crewai pins
+`openai<3` and `openai-agents` pins `openai>=3`, a real conflict between
+two frameworks, not a saltapp bug. Test one or a few frameworks per venv
+if you hit it.
