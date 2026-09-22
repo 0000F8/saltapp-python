@@ -725,10 +725,10 @@ class Agent:
             agent_id=self.identity.agent_id,
             webhook_secret_provider=lambda: self.webhook_secret,
             verify_signatures=self.verify_signatures,
-            # The wide socket-mode tolerance (SOCKET_SIGNATURE_TOLERANCE_SECONDS,
-            # not self.signature_tolerance_seconds -- that one's for the
-            # webhook/ASGI path's 300s default) -- see saltapp.socket's
-            # header comment for why an outbox row needs much more slack.
+            # SOCKET_SIGNATURE_TOLERANCE_SECONDS rather than
+            # self.signature_tolerance_seconds: the socket path keeps its own
+            # named constant because adapters import it, but since serve-time
+            # signing landed both are ~300s. See saltapp.socket's header.
             tolerance_seconds=SOCKET_SIGNATURE_TOLERANCE_SECONDS,
             cursor_store=cursor_store,
             dedupe_store=dedupe_store,

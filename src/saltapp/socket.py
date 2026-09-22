@@ -13,14 +13,13 @@
 #     fallback/backlog-catch-up, polled ADAPTIVELY (ACTIVE_POLL_DELAY_SECONDS
 #     right after real activity, backing off one step at a time toward
 #     IDLE_POLL_DELAY_SECONDS the longer nothing shows up).
-#   - Verification tolerance is much wider than the webhook path's 300s
-#     default: SOCKET_SIGNATURE_TOLERANCE_SECONDS (matching salt-api's
-#     AgentUpdate::RETENTION, 7 days, plus an hour of slack) -- an outbox
-#     row can sit unpolled for days before this client ever sees it, so its
-#     embedded signing timestamp is routinely "stale" by the webhook path's
-#     clock. Replay protection therefore comes from the cursor PLUS a
+#   - Verification tolerance is the SAME ~300s window the webhook path
+#     uses (SOCKET_SIGNATURE_TOLERANCE_SECONDS). An outbox row can sit
+#     unpolled for days, but it is re-signed at SERVE time with the agent's
+#     current webhook secret, so what this client receives is always
+#     freshly stamped. Replay protection still comes from the cursor PLUS a
 #     persistent per-agent delivery_id dedupe set (DedupeStore), never from
-#     the timestamp.
+#     the timestamp -- the timestamp is a staleness bound, not the defence.
 #   - A verification failure that LOOKS transient (no signing secret
 #     available yet, or the lookup itself raised -- a network blip, not a
 #     bad/forged signature) halts the batch and does NOT advance the
@@ -56,10 +55,17 @@ from typing import Awaitable, Callable, Optional, Protocol
 from saltapp.client import AsyncSaltClient
 from saltapp.webhook import Event, WebhookVerificationError, handle
 
-# M5/F3 (security review): matches salt-api's AgentUpdate::RETENTION
-# (7 days) plus an hour of slack -- an envelope can legitimately sit in the
-# outbox that long before this client ever sees it.
-SOCKET_SIGNATURE_TOLERANCE_SECONDS = 7 * 24 * 60 * 60 + 60 * 60
+# The SAME ~300s window the webhook path uses. This was once RETENTION
+# (7 days) + an hour, on the reasoning that an envelope can sit unpolled in
+# the outbox for days, so its signing timestamp would routinely look stale.
+# That reasoning stopped being true when salt-api moved to SERVE-TIME
+# signing (LANES.md "fix A", round 3): an envelope is re-signed with the
+# agent's current webhook secret at the moment it is served, so its
+# timestamp is always fresh relative to when this client actually receives
+# it -- measured at ~1.1s on the live production gate, not days. Keeping
+# the week-wide window bought nothing and cost real replay resistance.
+# (The constant keeps its name because adapters import it by name.)
+SOCKET_SIGNATURE_TOLERANCE_SECONDS = 300
 
 # H1 (security review): the server itself only ever holds a request for up
 # to ~2s when there's nothing to return, so without a pause between polls

@@ -103,8 +103,8 @@ async def test_poll_once_drops_bad_signature_but_still_advances_cursor():
 
 @pytest.mark.asyncio
 async def test_poll_once_drops_replayed_stale_envelope():
-    # Beyond even the wide socket-mode tolerance (retention + 1h) -- still a
-    # DEFINITIVE rejection, so the cursor still advances past it.
+    # Far beyond the socket-mode tolerance -- still a DEFINITIVE rejection,
+    # so the cursor still advances past it.
     body = {"message": {"chat_id": "c1"}}
     stale = envelope(1, body, t=int(time.time()) - (SOCKET_SIGNATURE_TOLERANCE_SECONDS + 10_000))
 
@@ -119,19 +119,44 @@ async def test_poll_once_drops_replayed_stale_envelope():
 
 
 @pytest.mark.asyncio
-async def test_poll_once_uses_wide_default_tolerance_for_an_old_but_within_retention_envelope():
-    # Well beyond the webhook path's 300s default, but within retention +
-    # 1h -- an outbox row can legitimately sit unpolled for days.
+async def test_poll_once_accepts_an_old_outbox_row_signed_at_serve_time():
+    """A row can sit in the outbox for days, but salt-api re-signs it at
+    SERVE time, so what arrives here is always freshly stamped -- age in the
+    outbox is not age on the signature."""
     body = {"message": {"chat_id": "c1", "message": "hi", "user": {"id": "u1"}}}
-    old = envelope(1, body, t=int(time.time()) - (3 * 24 * 60 * 60))  # 3 days old
+    # id 1 is days old as a ROW; its signature was minted just now.
+    served_now = envelope(1, body, t=int(time.time()))
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"updates": [old], "cursor": 1})
+        return httpx.Response(200, json={"updates": [served_now], "cursor": 1})
 
     socket = make_socket(handler)
 
     events = await socket.poll_once()
     assert len(events) == 1
+    assert socket.cursor_store.get() == 1
+
+
+@pytest.mark.asyncio
+async def test_poll_once_rejects_an_envelope_whose_signature_is_genuinely_stale():
+    """The counterpart to serve-time signing: because every envelope is
+    stamped as it is served, a timestamp that IS old means something is
+    wrong (a replay), so the socket path uses the same ~300s window as the
+    webhook path rather than the week-wide one it carried before."""
+    assert SOCKET_SIGNATURE_TOLERANCE_SECONDS == 300
+
+    body = {"message": {"chat_id": "c1", "message": "hi", "user": {"id": "u1"}}}
+    stale = envelope(1, body, t=int(time.time()) - 3600)  # an hour old
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"updates": [stale], "cursor": 1})
+
+    socket = make_socket(handler)
+
+    events = await socket.poll_once()
+    assert events == []
+    # A definitive rejection still advances past the row -- retrying a
+    # permanently bad signature forever would wedge the agent.
     assert socket.cursor_store.get() == 1
 
 

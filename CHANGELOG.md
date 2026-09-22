@@ -2,6 +2,25 @@
 
 All notable changes to `saltapp` are documented here. Dates are UTC.
 
+## 0.1.2 - 2026-09-22
+
+Narrows the socket-mode signature tolerance from a week to the same ~300s
+window the webhook path uses.
+
+`SOCKET_SIGNATURE_TOLERANCE_SECONDS` was `RETENTION + 1h` (7 days plus an
+hour), on the reasoning that an outbox row can sit unpolled for days, so its
+signing timestamp would routinely look stale. That reasoning stopped being
+true when salt-api moved to **serve-time signing** (LANES.md "fix A"): an
+envelope is re-signed with the agent's current webhook secret at the moment
+it is served, so what a client receives is always freshly stamped —
+measured at ~1.1s against the live production gate on 2026-09-22, not days.
+The week-wide window bought nothing and cost real replay resistance. The
+constant keeps its name; adapters import it by name.
+
+The test that pinned the old behaviour is replaced by two that pin the real
+contract: an old outbox row signed at serve time is accepted, and an
+envelope whose signature is genuinely an hour old is rejected.
+
 ## 0.1.1 - 2026-09-18
 
 Aligns `saltapp.socket`/`saltapp.agent`'s ask/approve with the socket-mode

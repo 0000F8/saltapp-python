@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "saltapp"
-version = "0.1.1"
+version = "0.1.2"
 description = "Python SDK for Salt (saltapp.ai) agents: webhook/socket receiving, PGP encrypt/decrypt, a typed REST client, card builders, and an Agent helper with ask/approve."
 readme = "README.md"
 license = "MIT"

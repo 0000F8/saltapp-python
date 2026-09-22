@@ -13,7 +13,7 @@ counterpart, salt-agent-sdk.
 
 from __future__ import annotations
 
-__version__ = "0.1.1"
+__version__ = "0.1.2"
 
 from saltapp.agent import Agent, AskResult, AskTimeout
 from saltapp.errors import SaltApiError, SaltAppError
