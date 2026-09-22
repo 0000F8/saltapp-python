@@ -1,49 +1,59 @@
-# Socket-mode short-poll client, per the K2 contract (an agent with no
-# public URL receives exactly what a webhook would have delivered).
+# Socket mode's on-demand drain -- an agent with no public URL and no open
+# Action Cable connection (see `saltapp.cable.CableClient`, the actual
+# real-time transport) can still catch up on what it missed by asking,
+# ONCE, for exactly what's sitting in its outbox right now. There is no
+# loop anywhere in this module that runs on its own schedule -- per the
+# owner's ruling (via team lead): "DO NOT USE POLLING as a mechanic EVER:
+# pull on demand, push on address." `SocketClient.drain_once` pages
 #
-# AS OF 2026-09-22, `saltapp.agent.Agent.run_socket_async()` no longer uses
-# `SocketClient` -- it runs on `saltapp.cable.CableClient`, a real Action
-# Cable websocket connection, per the owner's ruling (via team lead): "DO
-# NOT USE POLLING as a mechanic EVER: pull on demand, push on address."
-# `SocketClient` stays here, unchanged, as a low-level fallback primitive
-# (and because `saltapp.cable` reuses its CursorStore/DedupeStore
-# implementations below) -- it is not what a new integration should reach
-# for to receive events.
-#
-#   GET /api/v1/agent/updates?after=<cursor>&timeout=<0..2>&limit=<1..100>
+#   GET /api/v1/agent/updates?after=<cursor>&timeout=0&limit=<1..100>
 #   -> 200 {updates: [{id, delivery_id, event, headers, body, created_at}],
 #           cursor: <last id or after>}
 #
-# REVISED 2026-09-18 after a security review of the reference TS
-# implementation (design-fleet/runs/2026-09-17-distribution/LANES.md's
-# "Socket mode contract" section, salt-agent-sdk/src/socket.ts):
-#   - `timeout` is clamped server-side to 0..2s regardless of what's sent
-#     -- Action Cable is the real push path; this endpoint is a
-#     fallback/backlog-catch-up, polled ADAPTIVELY (ACTIVE_POLL_DELAY_SECONDS
-#     right after real activity, backing off one step at a time toward
-#     IDLE_POLL_DELAY_SECONDS the longer nothing shows up).
-#   - Verification tolerance is the SAME ~300s window the webhook path
-#     uses (SOCKET_SIGNATURE_TOLERANCE_SECONDS). An outbox row can sit
-#     unpolled for days, but it is re-signed at SERVE time with the agent's
-#     current webhook secret, so what this client receives is always
-#     freshly stamped. Replay protection still comes from the cursor PLUS a
-#     persistent per-agent delivery_id dedupe set (DedupeStore), never from
-#     the timestamp -- the timestamp is a staleness bound, not the defence.
-#   - A verification failure that LOOKS transient (no signing secret
-#     available yet, or the lookup itself raised -- a network blip, not a
-#     bad/forged signature) halts the batch and does NOT advance the
-#     cursor past that row: retried with backoff instead, or a real update
-#     sitting behind a transient failure would be silently skipped
-#     forever. A DEFINITIVE rejection (bad signature, malformed header,
-#     genuinely stale timestamp) still advances past it -- retrying a
-#     forged/bad envelope forever would just wedge the client on it.
-#   - The default cursor AND dedupe stores are now FILE-based, at
-#     `~/.salt/agents/<agentId>/cursor.json` and `.../seen.json` (dirs
-#     0700, files 0600) -- memory is opt-in, not the default, since
-#     silently losing both on every restart is exactly the kind of thing
-#     that should be a deliberate choice. Pass `MemoryCursorStore()`/
-#     `MemoryDedupeStore()` explicitly to opt out (tests must always do
-#     this, so they never write to the real home directory).
+# (`timeout` is always 0: this never holds a connection open waiting for
+# something to show up, it only ever asks what's already there) until a
+# page comes back empty, verifying and deduping each row exactly like a
+# webhook POST, then returns every verified `Event` and stops -- it makes
+# exactly as many requests as it takes to empty the backlog, never more.
+#
+# Two callers: `saltapp.cable.CableClient` uses this for its own on-demand
+# backfill, and ONLY when a Cable replay said the backlog was truncated
+# (`replay_done.more`) -- never on an interval, never as its primary
+# transport. A tool-shaped host -- a Langflow/Dify-style integration whose
+# code only runs when an LLM invokes it, never in the background -- can
+# call `drain_once()` directly each time it's invoked, to pull whatever
+# arrived since the last call; that's still "pull on demand," not polling,
+# because nothing here decides to call it again on its own.
+#
+# Verification tolerance is the SAME ~300s window the webhook path uses
+# (`SOCKET_SIGNATURE_TOLERANCE_SECONDS`). An outbox row can sit un-drained
+# for days, but it is re-signed at SERVE time with the agent's current
+# webhook secret, so what this module receives is always freshly stamped
+# (see `AgentUpdate#as_client_json` in salt-api). Replay protection comes
+# from the cursor PLUS a persistent per-agent delivery_id dedupe set
+# (DedupeStore), never from the timestamp -- the timestamp is a staleness
+# bound, not the defence.
+#
+# A verification failure that LOOKS transient (no signing secret available
+# yet, or the lookup itself raised -- a network blip, not a bad/forged
+# signature) stops the drain right there and does NOT advance the cursor
+# past that row: the next call to `drain_once` (whenever the caller next
+# makes one -- on demand, not scheduled) picks it up again, or a real
+# update sitting behind a transient failure would be silently skipped
+# forever. A DEFINITIVE rejection (bad signature, malformed header,
+# genuinely stale timestamp) still advances past it -- retrying a
+# forged/bad envelope forever would just wedge the caller on it. A
+# transport error (the HTTP call itself failing) is NOT caught here --
+# it propagates to the caller, which decides whether and how to retry
+# (see `saltapp.cable.CableClient._backfill` for an example with backoff).
+#
+# The default cursor AND dedupe stores are FILE-based, at
+# `~/.salt/agents/<agentId>/cursor.json` and `.../seen.json` (dirs 0700,
+# files 0600) -- memory is opt-in, not the default, since silently losing
+# both on every restart is exactly the kind of thing that should be a
+# deliberate choice. Pass `MemoryCursorStore()`/`MemoryDedupeStore()`
+# explicitly to opt out (tests must always do this, so they never write to
+# the real home directory).
 #
 # Each update's `headers`/`body` are exactly what the equivalent webhook
 # POST would have carried (including a real X-Salt-Signature), so this
@@ -52,50 +62,38 @@
 # salt-api cannot forge an update, only replay or drop one.
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import os
 import re
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable, Optional, Protocol
+from typing import Callable, Optional, Protocol
 
 from saltapp.client import AsyncSaltClient
 from saltapp.webhook import Event, WebhookVerificationError, handle
 
 # The SAME ~300s window the webhook path uses. This was once RETENTION
-# (7 days) + an hour, on the reasoning that an envelope can sit unpolled in
-# the outbox for days, so its signing timestamp would routinely look stale.
-# That reasoning stopped being true when salt-api moved to SERVE-TIME
-# signing (LANES.md "fix A", round 3): an envelope is re-signed with the
-# agent's current webhook secret at the moment it is served, so its
-# timestamp is always fresh relative to when this client actually receives
-# it -- measured at ~1.1s on the live production gate, not days. Keeping
-# the week-wide window bought nothing and cost real replay resistance.
-# (The constant keeps its name because adapters import it by name.)
+# (7 days) + an hour, on the reasoning that an envelope can sit un-drained
+# in the outbox for days, so its signing timestamp would routinely look
+# stale. That reasoning stopped being true when salt-api moved to
+# SERVE-TIME signing (LANES.md "fix A", round 3): an envelope is re-signed
+# with the agent's current webhook secret at the moment it is served, so
+# its timestamp is always fresh relative to when this client actually
+# receives it -- measured at ~1.1s on the live production gate, not days.
+# Keeping the week-wide window bought nothing and cost real replay
+# resistance. (The constant keeps its name because adapters import it by
+# name.)
 SOCKET_SIGNATURE_TOLERANCE_SECONDS = 300
 
-# H1 (security review): the server itself only ever holds a request for up
-# to ~2s when there's nothing to return, so without a pause between polls
-# an idle agent would still hit the endpoint every ~2s indefinitely.
-DEFAULT_POLL_TIMEOUT_SECONDS = 2
-
-# Adaptive polling (H1/LANES.md): poll again soon after real activity;
-# back off toward IDLE_POLL_DELAY_SECONDS one step at a time the longer
-# nothing shows up, snapping back to ACTIVE_POLL_DELAY_SECONDS the moment
-# something does.
-ACTIVE_POLL_DELAY_SECONDS = 1.0
-IDLE_POLL_DELAY_SECONDS = 5.0
-
 DEFAULT_DEDUPE_MAX = 5000
+DEFAULT_DRAIN_LIMIT = 100
 
 
 def default_state_dir(agent_id: str) -> Path:
     """`~/.salt/agents/<agentId>` -- the default home for BOTH the cursor
     and dedupe files for one identity, unless the caller passes its own
-    stores explicitly (see SocketClient/Agent.run_socket_async). Created
-    (and chmod'd 0700) if missing."""
+    stores explicitly (see SocketClient/saltapp.cable.CableClient/
+    Agent.run_socket_async). Created (and chmod'd 0700) if missing."""
     safe = re.sub(r"[^a-z0-9_-]", "_", str(agent_id).lower()) or "unknown"
     directory = Path.home() / ".salt" / "agents" / safe
     directory.mkdir(parents=True, exist_ok=True)
@@ -236,44 +234,20 @@ class FileDedupeStore:
         _atomic_write(self.path, json.dumps(items))
 
 
-@dataclass
-class _Backoff:
-    initial: float = 1.0
-    maximum: float = 30.0
-    factor: float = 2.0
-
-    def __post_init__(self) -> None:
-        self._current = self.initial
-
-    def next(self) -> float:
-        wait = self._current
-        self._current = min(self._current * self.factor, self.maximum)
-        return wait
-
-    def reset(self) -> None:
-        self._current = self.initial
-
-
-OnEvent = Callable[[Event], Awaitable[None]]
-
-# One round-trip's handling of a single update row: "advance" means the
-# cursor may move past it (whether dispatched, deduped-skip, or a
-# DEFINITIVE rejection like a bad signature); "halt" means a failure that
-# might be transient (no signing secret available, or the lookup itself
-# raised) -- the caller must not advance the cursor past it.
+# One row's verify+dedupe outcome -- "advance" means the cursor may move
+# past it (whether dispatched, deduped-skip, or a DEFINITIVE rejection
+# like a bad signature); "halt" means a failure that might be transient
+# (no signing secret available, or the lookup itself raised) -- the caller
+# must not advance the cursor past it.
 _RowOutcome = str  # "advance" | "halt"
 
 
 class SocketClient:
-    """Short-polls `GET /api/v1/agent/updates` and yields verified `Event`s,
-    in cursor order. Transport concern only -- dedupe against the
-    server-side event families, the mention rule and loop guards live in
+    """On-demand drain of `GET /api/v1/agent/updates` -- `drain_once()` is
+    the only way this ever makes a request; nothing here loops or waits on
+    its own. Transport concern only -- dedupe against the server-side
+    event families, the mention rule and loop guards live in
     `saltapp.agent.Agent`.
-
-    NOT what `Agent.run_socket_async()` uses (see `saltapp.cable.
-    CableClient` instead, as of 2026-09-22) -- kept as a low-level
-    fallback primitive for a caller that specifically wants HTTP-only
-    long-polling with no persistent websocket.
     """
 
     def __init__(
@@ -288,10 +262,7 @@ class SocketClient:
         tolerance_seconds: int = SOCKET_SIGNATURE_TOLERANCE_SECONDS,
         cursor_store: CursorStore | None = None,
         dedupe_store: DedupeStore | None = None,
-        poll_timeout: int = DEFAULT_POLL_TIMEOUT_SECONDS,
-        poll_limit: int = 100,
-        active_poll_delay: float = ACTIVE_POLL_DELAY_SECONDS,
-        idle_poll_delay: float = IDLE_POLL_DELAY_SECONDS,
+        limit: int = DEFAULT_DRAIN_LIMIT,
         logger: logging.Logger | None = None,
     ) -> None:
         self.client = client
@@ -303,13 +274,16 @@ class SocketClient:
         self.tolerance_seconds = tolerance_seconds
         self.cursor_store = cursor_store if cursor_store is not None else FileCursorStore(default_state_dir(agent_id) / "cursor.json")
         self.dedupe_store = dedupe_store if dedupe_store is not None else FileDedupeStore(default_state_dir(agent_id) / "seen.json")
-        self.poll_timeout = poll_timeout
-        self.poll_limit = poll_limit
-        self.active_poll_delay = active_poll_delay
-        self.idle_poll_delay = idle_poll_delay
+        self.limit = limit
         self._logger = logger or logging.getLogger("saltapp.socket")
-        self._backoff = _Backoff()
-        self._had_activity = False
+        # Set by drain_once() on every call: True when the drain actually
+        # reached an empty page (genuinely nothing left), False when it
+        # stopped early on a transient verification halt. An empty
+        # `events` list is ambiguous by itself -- both outcomes can return
+        # one -- so a caller that needs to tell "caught up" apart from
+        # "try again" (see saltapp.cable.CableClient._backfill) reads this
+        # right after a drain_once() call, before calling it again.
+        self.exhausted = True
 
     def _secret(self) -> str | None:
         if self._secret_provider is not None:
@@ -332,13 +306,13 @@ class SocketClient:
                 secret = self._secret()
             except Exception as exc:  # noqa: BLE001 -- a network blip fetching the secret
                 self._logger.error(
-                    "[socket] fetching signing secret failed (transient) for update id=%s: %s; will retry",
+                    "[socket] fetching signing secret failed (transient) for update id=%s: %s",
                     update.get("id"), exc,
                 )
                 return "halt", None
             if not secret:
                 self._logger.error(
-                    "[socket] no signing secret available yet for update id=%s (transient); will retry",
+                    "[socket] no signing secret available yet for update id=%s (transient)",
                     update.get("id"),
                 )
                 return "halt", None
@@ -371,81 +345,58 @@ class SocketClient:
 
         return "advance", event
 
-    async def poll_once(self) -> list[Event]:
-        """One short-poll round-trip. Returns zero or more verified,
-        deduped events, in server order, and advances the cursor store past
-        all of them -- UNLESS a transient verification failure halts the
-        batch partway through, in which case the cursor stops just short of
-        it (never re-dispatching what's already been handled, never
-        skipping what hasn't) and this call sleeps out a backoff delay
-        before returning. On a transport error, sleeps for the current
-        backoff delay, extends it, and returns an empty list; any clean
-        round trip (even an empty one) resets the backoff.
-        """
-        after = self.cursor_store.get()
-        try:
-            response = await self.client.get_agent_updates(
-                self.api_key, after=after, timeout=self.poll_timeout, limit=self.poll_limit
-            )
-        except Exception as exc:  # noqa: BLE001 -- any transport/HTTP failure
-            self._logger.error("[socket] poll failed: %s", exc)
-            await asyncio.sleep(self._backoff.next())
-            self._had_activity = False
-            return []
+    async def drain_once(self, after: int | None = None) -> list[Event]:
+        """Pages `GET /api/v1/agent/updates` (always `timeout=0` -- never
+        holds a connection open waiting for something new) from `after`
+        (or this instance's own `cursor_store` position when `after` is
+        `None`) until a page comes back empty, then returns every
+        verified, deduped `Event` collected along the way, in order. The
+        cursor store is advanced/persisted as it goes -- a page that
+        contains only a deduped repeat or a definitively-rejected row
+        still moves the cursor past it, same as ever.
 
-        updates = response.get("updates") or []
-        server_cursor = response.get("cursor", after)
+        Stops early (returning what it has so far) on a transient
+        verification failure, WITHOUT advancing the cursor store past the
+        row that failed -- the next call to `drain_once` picks it up
+        again. A transport error talking to salt-api is NOT caught here;
+        it propagates, so the caller decides whether and how to retry
+        (this module has no retry loop of its own -- see
+        `saltapp.cable.CableClient._backfill` for a caller that adds
+        one).
 
+        An empty return is ambiguous by itself (a genuinely empty first
+        page and a halt on the first row both return `[]`) -- check
+        `self.exhausted` right after the call: `True` means this drain
+        actually reached an empty page (nothing left), `False` means it
+        stopped early on a transient halt and there is more to fetch once
+        that clears up."""
+        cursor = self.cursor_store.get() if after is None else after
         events: list[Event] = []
-        advanced = after
-        halted = False
-        for update in updates:
-            outcome, event = self._classify_update(update)
-            if outcome == "halt":
-                halted = True
-                break
-            update_id = update.get("id")
-            if update_id is not None:
-                advanced = update_id
-            if event is not None:
-                events.append(event)
+        while True:
+            response = await self.client.get_agent_updates(self.api_key, after=cursor, timeout=0, limit=self.limit)
+            updates = response.get("updates") or []
+            if not updates:
+                self.exhausted = True
+                return events
 
-        if halted:
-            self.cursor_store.set(advanced)
-            self._had_activity = bool(events)
-            await asyncio.sleep(self._backoff.next())
-            return events
+            advanced = cursor
+            halted = False
+            for update in updates:
+                outcome, event = self._classify_update(update)
+                if outcome == "halt":
+                    halted = True
+                    break
+                update_id = update.get("id")
+                if update_id is not None:
+                    advanced = update_id
+                if event is not None:
+                    events.append(event)
 
-        self._backoff.reset()
-        self.cursor_store.set(server_cursor if server_cursor is not None else advanced)
-        self._had_activity = len(updates) > 0
-        return events
+            if halted:
+                self.cursor_store.set(advanced)
+                self.exhausted = False
+                return events
 
-    async def run(self, on_event: OnEvent, *, stop: asyncio.Event | None = None) -> None:
-        """Poll forever (until `stop` is set), adaptively: `active_poll_delay`
-        between polls right after a poll returned real activity, ramping
-        one step at a time toward `idle_poll_delay` the longer nothing
-        does, snapping back the moment something does. Each event's
-        `on_event` call is scheduled as its own task rather than awaited
-        inline, so one handler blocked in `ctx.ask()` (see saltapp.agent)
-        never stalls the poll loop -- new updates, including the answer
-        that handler is waiting on, keep arriving.
-        """
-        idle_delay = self.active_poll_delay
-        while stop is None or not stop.is_set():
-            events = await self.poll_once()
-            for event in events:
-                asyncio.create_task(self._safe_call(on_event, event))
-            if stop is not None and stop.is_set():
-                break
-            if self._had_activity:
-                idle_delay = self.active_poll_delay
-            else:
-                idle_delay = min(idle_delay + self.active_poll_delay, self.idle_poll_delay)
-            await asyncio.sleep(idle_delay)
-
-    async def _safe_call(self, on_event: OnEvent, event: Event) -> None:
-        try:
-            await on_event(event)
-        except Exception as exc:  # noqa: BLE001
-            self._logger.error("[socket] handler failed for delivery %s: %s", event.delivery_id, exc)
+            server_cursor = response.get("cursor")
+            cursor = server_cursor if server_cursor is not None else advanced
+            self.cursor_store.set(cursor)

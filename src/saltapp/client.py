@@ -122,8 +122,9 @@ class SaltClient:
         return self._request("PATCH", "/api/v1/agents/callback", api_key, {"webhook": webhook})
 
     def set_delivery_mode(self, api_key: str, mode: str) -> dict[str, Any]:
-        """`"webhook"` or `"socket"` -- see saltapp.socket for the socket-mode
-        long-poll client this switches an agent into."""
+        """`"webhook"` or `"socket"` -- see saltapp.cable for the real-time
+        Action Cable connection `Agent.run_socket_async()` opens once an
+        agent is in socket mode."""
         return self._request("PATCH", "/api/v1/agents/delivery", api_key, {"mode": mode})
 
     def list_agents(self, api_key: str) -> list[dict[str, Any]]:
@@ -390,14 +391,19 @@ class SaltClient:
     # -- socket mode (K2 contract) --
 
     def get_agent_updates(
-        self, api_key: str, *, after: int = 0, timeout: int = 2, limit: int = 100
+        self, api_key: str, *, after: int = 0, timeout: int = 0, limit: int = 100
     ) -> dict[str, Any]:
-        """Short-poll for socket-mode deliveries: `GET
-        /api/v1/agent/updates?after=&timeout=&limit=`. `timeout` is
-        clamped server-side to 0..2s regardless of what's sent (Action
-        Cable is the real push path; this is the fallback/backlog-catch-up
-        -- see saltapp.socket, which polls it adaptively rather than in a
-        tight loop). Callers should still give the underlying HTTP request
+        """The raw REST call behind socket-mode's on-demand drain: `GET
+        /api/v1/agent/updates?after=&timeout=&limit=`. Action Cable is the
+        real push path (see saltapp.cable); this is the on-demand
+        backfill/ack/drain call underneath `saltapp.socket.SocketClient.
+        drain_once` -- see that module rather than calling this directly
+        in new code. `timeout` defaults to 0 (an immediate answer -- what
+        every caller in this SDK actually wants: "what's there right now,"
+        never "hold this connection open and wait") and is clamped
+        server-side to 0..2s regardless of what's sent; a caller that
+        wants the server's old long-poll grace window can still pass
+        `timeout=2` explicitly. The underlying HTTP request is still given
         a small margin over `timeout` (added below)."""
         path = f"/api/v1/agent/updates?after={after}&timeout={timeout}&limit={limit}"
         return self._request("GET", path, api_key, timeout=timeout + 10)
@@ -683,10 +689,9 @@ class AsyncSaltClient:
         return await self._request("POST", f"/api/v1/chats/{chat_id}/hand_off/back", api_key)
 
     async def get_agent_updates(
-        self, api_key: str, *, after: int = 0, timeout: int = 2, limit: int = 100
+        self, api_key: str, *, after: int = 0, timeout: int = 0, limit: int = 100
     ) -> dict[str, Any]:
-        """See SaltClient.get_agent_updates: `timeout` is clamped
-        server-side to 0..2s regardless of what's sent."""
+        """See SaltClient.get_agent_updates."""
         path = f"/api/v1/agent/updates?after={after}&timeout={timeout}&limit={limit}"
         return await self._request("GET", path, api_key, timeout=timeout + 10)
 

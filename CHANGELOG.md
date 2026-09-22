@@ -21,15 +21,20 @@ those.
 - **Interests**: `client.get_chat_subscription`/`set_chat_subscription`/
   `clear_chat_subscription` (`mode`: `addressed`|`keywords`|`all`) against
   `/api/v1/chats/:id/subscription`.
-- **Socket mode is push, not poll.** New `saltapp.cable.CableClient` opens
-  a real websocket to salt-api's Action Cable and stays connected;
-  `Agent.run_socket_async()` now runs on it instead of the old adaptive
-  short-poll. `GET /api/v1/agent/updates` is used only on demand now (a
-  truncated-replay backfill, or a coalesced ack), never on an interval.
-  Adds a new hard dependency, `websockets>=12.0`. `saltapp.socket.
-  SocketClient` (the short-poll client) is unchanged and still available
-  as a low-level fallback primitive; it just isn't what `Agent` uses by
-  default any more.
+- **Socket mode is push, not poll -- nowhere, not even as a fallback.**
+  New `saltapp.cable.CableClient` opens a real websocket to salt-api's
+  Action Cable and stays connected; `Agent.run_socket_async()` now runs on
+  it. `saltapp.socket.SocketClient`'s old adaptive poll-forever loop
+  (`run()`, `poll_once()`, `ACTIVE_POLL_DELAY_SECONDS`/
+  `IDLE_POLL_DELAY_SECONDS`) is deleted, not kept as a fallback -- a
+  documented poll loop is still a poll loop. What's left is `SocketClient.
+  drain_once(after=None)`: an on-demand call that pages `GET /api/v1/
+  agent/updates` (`timeout=0`) until a page comes back empty, then returns
+  and stops. `CableClient` reuses it for its own on-demand backfill
+  (`replay_done.more` only) and coalesced ack, never on an interval; a
+  tool-shaped host (a Langflow/Dify-style integration that only runs when
+  invoked) can call `drain_once` directly the same way. Adds a new hard
+  dependency, `websockets>=12.0`.
 
 ## 0.1.2 - 2026-09-22
 

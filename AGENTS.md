@@ -28,7 +28,7 @@ assumes you've read that.
 | `saltapp.cards` | `card.rb`'s validator (salt-api) + `actions.ts`'s card builder comments | Block builders: `section`/`field`/`divider`/`image`/`button`/`pay_button`/`handoff_button`/`actions`/`blocks`, with the same limits (`MAX_BLOCKS` etc.) as the server validator. |
 | `saltapp.client` | `client.ts` + `salt_client.py` | `SaltClient` (sync) / `AsyncSaltClient` (async): messages, chats, cards, payment requests, invoices, products, usage, hand-offs. |
 | `saltapp.webhook` | `webhook.ts`'s signature check + `webhook_auth.py` | `verify_signature`, `handle()` (framework-neutral), `create_asgi_app` (zero-dependency ASGI). |
-| `saltapp.socket` | K2 contract in `design-fleet/runs/2026-09-17-distribution/LANES.md`, revised 2026-09-18 after a security review | `MemoryCursorStore`/`FileCursorStore`, `MemoryDedupeStore`/`FileDedupeStore` (persistent, file-backed by default -- now shared with `saltapp.cable`). Also still hosts `SocketClient`, the original adaptive short-poll of `GET /api/v1/agent/updates` (1s after activity, backing off to 5s idle) -- kept as a low-level fallback primitive, but **`Agent.run_socket_async()` no longer uses it** as of 2026-09-22; see `saltapp.cable`. |
+| `saltapp.socket` | K2 contract in `design-fleet/runs/2026-09-17-distribution/LANES.md`, revised 2026-09-18 after a security review, then reduced to an on-demand primitive 2026-09-22 (owner, via team lead: "never polling" applies to a documented fallback too) | `MemoryCursorStore`/`FileCursorStore`, `MemoryDedupeStore`/`FileDedupeStore` (persistent, file-backed by default -- shared with `saltapp.cable`). `SocketClient.drain_once(after=None)`: pages `GET /api/v1/agent/updates` (`timeout=0`) until a page comes back empty, then RETURNS -- no loop, no interval, nothing runs on its own schedule. `Agent.run_socket_async()` doesn't use this at all (see `saltapp.cable`); `CableClient._backfill` calls `drain_once` for its own on-demand catch-up, and a tool-shaped host can call it directly each time it's invoked. |
 | `saltapp.cable` | `salt-agent-sdk/src/socket.ts`'s `createSocketClient`, rewritten onto Action Cable 2026-09-22 (owner, via team lead: "DO NOT USE POLLING as a mechanic EVER: pull on demand, push on address") | `CableClient`: a real websocket to `wss://<host>/cable` (`AgentUpdatesChannel`, api-key handshake header), subscribe/replay/`replay_done`, live dispatch, on-demand backfill (`more: true` only) and a coalesced ack via `GET /api/v1/agent/updates` -- never on an interval. Reconnects with jittered exponential backoff (1s..60s), honours `Retry-After` on a 429 handshake, treats 30s without a `{type:"ping"}` as dead. Deliberately simpler than the TS reference in one place (no strict buffer-then-drain ordering during backfill -- correctness still holds via DedupeStore, see the module's header) and stricter in another (dispatch runs as its own `asyncio.create_task`, not awaited inline, because `ctx.ask()` can block a handler on a reply that can only arrive by this same loop continuing to run -- a primitive the TS SDK doesn't have yet). |
 | `saltapp.agent` | `webhook.ts`'s dispatch logic (mention rule, loop guard, GACM, dedupe) + this SDK's own `ask()`/`approve()` | `Agent`: decorators, dispatch, `run_socket()` (now cable-backed), `asgi_app()`. `MessageContext.encrypted`/`.delivered_because` (open rooms, 2026-09-22); `_handle_message` actually calls `crypto.decrypt()` for an encrypted delivery now -- see the dated note below, this was a real bug. |
 | `saltapp.integrations.fastapi` / `.flask` | New | Thin adapters mounting `Agent` into an app you already have. |
@@ -89,12 +89,12 @@ revisit this file's note if that lands.
 Concurrency note: `ask()`'s wait is implemented with a `threading.Event`
 awaited via `asyncio.to_thread`, specifically so it does not block the
 event loop `Agent.run_socket_async()`/`asgi_app()` run on -- the cable
-connection (or, on the low-level fallback, the socket poller) keeps
-running (and can deliver the very update that resolves the ask) while a
-handler is suspended inside `ctx.ask()`. Both `saltapp.cable.CableClient.
-run()` and `saltapp.socket.SocketClient.run()` schedule each event's
-dispatch as its own `asyncio.create_task`, not an inline `await`, for the
-same reason.
+connection keeps running (and can deliver the very update that resolves
+the ask) while a handler is suspended inside `ctx.ask()`.
+`saltapp.cable.CableClient.run()` schedules each event's dispatch as its
+own `asyncio.create_task`, not an inline `await`, for the same reason --
+see `saltapp/cable.py`'s header comment ("DELIBERATE STRENGTHENING") for
+why that matters specifically because of `ctx.ask()`.
 
 **M2 parity fix (security review, 2026-09-18)**: `ask()`/`approve()` now
 name ONE expected answerer (`from_user_id`, defaulting to whoever
@@ -217,13 +217,25 @@ before trusting one.
      (`mode`: `addressed`|`keywords`|`all`).
   4. **Action Cable, not polling** (owner, via team lead: "DO NOT USE
      POLLING as a mechanic EVER: pull on demand, push on address"): new
-     `saltapp.cable.CableClient` replaces `SocketClient`'s adaptive
-     short-poll as what `Agent.run_socket_async()` actually runs --
-     `SocketClient` itself is untouched and still importable (a documented
-     low-level fallback), just no longer wired in by default. See the
-     module map above and `saltapp/cable.py`'s own header comment for the
-     full wire contract, and `tests/test_cable.py` for the in-process fake
-     Action Cable server the whole thing is tested against (no real
+     `saltapp.cable.CableClient` is what `Agent.run_socket_async()` runs.
+     A follow-up from the SAME owner ruling, once "kept `SocketClient` as
+     a documented fallback" was pointed out to still BE a poll loop
+     (2026-09-22, second pass): `SocketClient.run()` -- the adaptive
+     poll-forever loop, and `ACTIVE_POLL_DELAY_SECONDS`/
+     `IDLE_POLL_DELAY_SECONDS` -- is DELETED, not kept. What's left is
+     `SocketClient.drain_once(after=None)`: pages `GET /api/v1/agent/
+     updates` (`timeout=0` always) until a page comes back empty, then
+     returns and stops -- one on-demand call, never a loop that decides to
+     call itself again. `CableClient._backfill` reuses it (`self._drain`)
+     for its own on-demand catch-up, the ONLY time it's invoked at all
+     (`replay_done.more`, never on an interval); a tool-shaped host (runs
+     only when invoked, never in the background) can call it directly the
+     same way. `SocketClient.exhausted` (set by every `drain_once` call)
+     tells a caller whether it actually reached empty or stopped early on
+     a transient verification halt -- an empty `events` list alone can't
+     say which. See the module map above and `saltapp/cable.py`'s/
+     `saltapp/socket.py`'s own header comments for the full contracts, and
+     `tests/test_cable.py`/`tests/test_socket.py` for coverage (no real
      network in any test here).
   5. **Not done, and why**: health-from-evidence work was N/A for this
      repo -- it never self-initiated `/health` polling to begin with

@@ -3,10 +3,10 @@
 # real websocket to salt-api's Action Cable (`AgentUpdatesChannel`) and
 # stays connected; salt-api PUSHES each envelope the instant it's written.
 # An idle, caught-up agent makes ZERO requests -- there is no interval
-# timer anywhere in this module. This replaces `saltapp.socket.SocketClient`
-# (an adaptive short-poll of `GET /api/v1/agent/updates`, kept only as a
-# fallback primitive -- see that module's header) as what `saltapp.agent.
-# Agent.run_socket_async` actually runs.
+# timer anywhere in this module. `saltapp.socket.SocketClient.drain_once`
+# is reused here ONLY for the on-demand backfill below (never as this
+# client's primary transport -- see BACKFILL) -- this module is what
+# `saltapp.agent.Agent.run_socket_async` actually runs.
 #
 # Ported from salt-agent-sdk/src/socket.ts's createSocketClient (K2 socket
 # mode, design-fleet/runs/2026-09-17-distribution/LANES.md, then rewritten
@@ -60,10 +60,12 @@
 # never a timer.
 #
 # BACKFILL: `replay_done.more: true` means AgentUpdatesChannel's own
-# MAX_BACKLOG_REPLAY (500 rows) truncated the backlog. This client pages
-# `GET /api/v1/agent/updates?after=<cursor>&timeout=0` (never with a
-# timeout, the ONLY remaining use of that parameter, and only when `more`
-# says so -- never on an interval) until a page comes back empty.
+# MAX_BACKLOG_REPLAY (500 rows) truncated the backlog. `_backfill` reaches
+# for `saltapp.socket.SocketClient.drain_once` (`self._drain`, sharing this
+# instance's own cursor_store/dedupe_store) ONLY here, ONLY when `more`
+# said so -- one on-demand call that itself pages `GET /api/v1/agent/
+# updates?after=<cursor>&timeout=0` until a page comes back empty. Never on
+# an interval, never as a standing loop.
 #
 # DELIBERATE SIMPLIFICATION vs. the TS reference: that client buffers any
 # live frame arriving WHILE a backfill's HTTP round trips are in flight, so
@@ -84,9 +86,8 @@
 # -- the TS SDK has no such primitive as of this writing (see agent.py's
 # module docstring), so its inline-await shape never has to worry about a
 # handler blocking on input that can only arrive by this same loop
-# continuing to run. Scheduling dispatch as its own task (the same pattern
-# `saltapp.socket.SocketClient.run` already uses) keeps frames flowing
-# while a handler waits.
+# continuing to run. Scheduling dispatch as its own task keeps frames
+# flowing while a handler waits.
 from __future__ import annotations
 
 import asyncio
@@ -100,11 +101,13 @@ from typing import Any, Awaitable, Callable, Optional
 
 from saltapp.client import AsyncSaltClient
 from saltapp.socket import (
+    DEFAULT_DRAIN_LIMIT,
     SOCKET_SIGNATURE_TOLERANCE_SECONDS,
     CursorStore,
     DedupeStore,
     FileCursorStore,
     FileDedupeStore,
+    SocketClient,
     default_state_dir,
 )
 from saltapp.webhook import Event, WebhookVerificationError, handle
@@ -117,9 +120,6 @@ RECONNECT_MAX_DELAY_SECONDS = 60.0
 # No Action Cable {type:"ping"} for this long means the connection is
 # presumed dead (a half-open TCP socket may never emit its own close).
 PING_TIMEOUT_SECONDS = 30.0
-
-# Max rows per backfill page (only fetched when replay_done.more is true).
-DEFAULT_BACKFILL_LIMIT = 100
 
 OnEvent = Callable[[Event], Awaitable[None]]
 
@@ -215,11 +215,12 @@ class CableClient:
     """Stays connected to salt-api's `AgentUpdatesChannel` over Action
     Cable, verifying each envelope with the exact same HMAC check
     `saltapp.webhook.handle` applies to a webhook POST, and yielding
-    verified `Event`s to `on_event` in `run()` -- the same contract
-    `saltapp.socket.SocketClient.run` offers, so `saltapp.agent.Agent` can
-    swap one for the other with no change to how events are handled.
-    Transport concern only: dedupe against the server-side event families,
-    the mention rule, and loop guards live in `saltapp.agent.Agent`.
+    verified `Event`s to `on_event` in `run()` -- what `saltapp.agent.
+    Agent.run_socket_async` actually runs. Transport concern only: dedupe
+    against the server-side event families, the mention rule, and loop
+    guards live in `saltapp.agent.Agent`. `saltapp.socket.SocketClient.
+    drain_once` is reused for the on-demand backfill only (see BACKFILL
+    in this module's header) -- there is no other polling anywhere.
     """
 
     def __init__(
@@ -234,7 +235,7 @@ class CableClient:
         tolerance_seconds: int = SOCKET_SIGNATURE_TOLERANCE_SECONDS,
         cursor_store: CursorStore | None = None,
         dedupe_store: DedupeStore | None = None,
-        backfill_limit: int = DEFAULT_BACKFILL_LIMIT,
+        backfill_limit: int = DEFAULT_DRAIN_LIMIT,
         min_backoff: float = RECONNECT_MIN_DELAY_SECONDS,
         max_backoff: float = RECONNECT_MAX_DELAY_SECONDS,
         ping_timeout: float = PING_TIMEOUT_SECONDS,
@@ -256,6 +257,24 @@ class CableClient:
         self.ping_timeout = ping_timeout
         self._connector: Connector = connector or (lambda uri, headers: _WebsocketsConnector(uri, headers))
         self._logger = logger or logging.getLogger("saltapp.cable")
+
+        # On-demand backfill only (see _backfill below) -- reuses this
+        # instance's OWN cursor_store/dedupe_store (not a second, separate
+        # pair pointed at the same files) so a row seen via a backfill page
+        # and a row seen via a live frame share one dedupe set and one
+        # cursor, never two independently-cached views of the same state.
+        self._drain = SocketClient(
+            client, api_key,
+            agent_id=agent_id,
+            webhook_secret=webhook_secret,
+            webhook_secret_provider=webhook_secret_provider,
+            verify_signatures=verify_signatures,
+            tolerance_seconds=tolerance_seconds,
+            cursor_store=self.cursor_store,
+            dedupe_store=self.dedupe_store,
+            limit=backfill_limit,
+            logger=self._logger,
+        )
 
         self._stopped = True
         self._highest_processed = 0
@@ -372,36 +391,45 @@ class CableClient:
                 self._ack_pending = False
                 self._schedule_ack()
 
-    # -- backfill (replay_done.more only) ----------------------------------
+    # -- backfill (replay_done.more only -- ON DEMAND, never on an interval) --
 
-    async def _backfill(self, cursor: int, on_event: OnEvent, stop: Optional[asyncio.Event] = None) -> None:
-        after = cursor
+    async def _backfill(self, on_event: OnEvent, stop: Optional[asyncio.Event] = None) -> None:
+        """Only reached when a `replay_done` frame said AgentUpdatesChannel's
+        own MAX_BACKLOG_REPLAY (500 rows) truncated the backlog -- drains
+        the rest via `saltapp.socket.SocketClient.drain_once` (this
+        instance's `self._drain`, sharing the SAME cursor_store/
+        dedupe_store as the live-frame path), retried with backoff on a
+        transport failure. `drain_once` already pages until a page comes
+        back empty and persists the cursor as it goes, so one call here
+        either finishes the whole backfill or raises; the cursor is
+        already seeded correctly before this is ever called (the caller
+        persists `replay_done`'s own cursor first -- see _one_connection),
+        so `drain_once`'s default (`after=None` -> its own cursor_store
+        position) is exactly right and there's nothing to pass it."""
         backoff = self.min_backoff
         while not self._stopped and (stop is None or not stop.is_set()):
             try:
-                response = await self.client.get_agent_updates(self.api_key, after=after, timeout=0, limit=self.backfill_limit)
+                events = await self._drain.drain_once()
             except Exception as exc:  # noqa: BLE001
                 self._logger.error("[cable] backfill request failed: %s; retrying in %.1fs", exc, backoff)
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, self.max_backoff)
                 continue
 
-            backoff = self.min_backoff
-            rows = response.get("updates") or []
-            for row in rows:
-                status, event = await self._handle_row(row)
-                if status == "advance":
-                    self._note_processed(row.get("id"))
-                    if isinstance(row.get("id"), int):
-                        after = row["id"]
-                    if event is not None:
-                        asyncio.create_task(self._safe_call(on_event, event))
+            self._note_processed(self.cursor_store.get())
+            for event in events:
+                asyncio.create_task(self._safe_call(on_event, event))
 
-            cursor_val = response.get("cursor")
-            after = cursor_val if isinstance(cursor_val, int) else after
-            self._persist_cursor(after)
-            if not rows:
+            # self._drain.exhausted distinguishes "genuinely caught up"
+            # from "stopped early on a transient halt" -- an empty
+            # `events` list alone can't (see SocketClient.drain_once's
+            # docstring); only the former means this backfill is done.
+            if self._drain.exhausted:
                 return
+
+            self._logger.error("[cable] backfill halted on a transient failure; retrying in %.1fs", backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, self.max_backoff)
 
     # -- one websocket connection's lifecycle ------------------------------
 
@@ -473,7 +501,7 @@ class CableClient:
                         cursor_to_persist = server_cursor if isinstance(server_cursor, int) else local_cursor
                         self._persist_cursor(cursor_to_persist)
                         if payload.get("more"):
-                            await self._backfill(cursor_to_persist, on_event, stop)
+                            await self._backfill(on_event, stop)
                         caught_up = True
                         continue
 

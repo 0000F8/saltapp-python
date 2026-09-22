@@ -36,7 +36,6 @@ from saltapp.client import AsyncSaltClient
 from saltapp.errors import SaltAppError
 from saltapp.identity import Identity
 from saltapp.socket import (
-    DEFAULT_POLL_TIMEOUT_SECONDS,
     SOCKET_SIGNATURE_TOLERANCE_SECONDS,
     CursorStore,
     DedupeStore,
@@ -739,22 +738,14 @@ class Agent:
         *,
         cursor_store: CursorStore | None = None,
         dedupe_store: DedupeStore | None = None,
-        poll_timeout: int = DEFAULT_POLL_TIMEOUT_SECONDS,
-        poll_limit: int = 100,
+        backfill_limit: int = 100,
     ) -> None:
         """Blocking entry point for socket mode: no public URL needed. Sets
         `users.delivery_mode = "socket"` on salt-api (idempotent), then
         connects to Action Cable and stays connected -- see
-        `run_socket_async`. Ctrl-C to stop.
-
-        `poll_timeout` is accepted for source compatibility with callers
-        written against the pre-2026-09-22 short-poll transport and is
-        ignored (there is no interval to time -- see saltapp.cable);
-        `poll_limit` becomes the backfill page size."""
+        `run_socket_async`. Ctrl-C to stop."""
         asyncio.run(
-            self.run_socket_async(
-                cursor_store=cursor_store, dedupe_store=dedupe_store, poll_timeout=poll_timeout, poll_limit=poll_limit
-            )
+            self.run_socket_async(cursor_store=cursor_store, dedupe_store=dedupe_store, backfill_limit=backfill_limit)
         )
 
     async def run_socket_async(
@@ -762,8 +753,7 @@ class Agent:
         *,
         cursor_store: CursorStore | None = None,
         dedupe_store: DedupeStore | None = None,
-        poll_timeout: int = DEFAULT_POLL_TIMEOUT_SECONDS,
-        poll_limit: int = 100,
+        backfill_limit: int = 100,
         min_backoff: float = RECONNECT_MIN_DELAY_SECONDS,
         max_backoff: float = RECONNECT_MAX_DELAY_SECONDS,
         ping_timeout: float = PING_TIMEOUT_SECONDS,
@@ -775,7 +765,7 @@ class Agent:
         PUSHES each event the instant it happens (see `saltapp.cable`'s
         header comment for the full wire contract). An idle, caught-up
         agent makes zero requests; there is no polling anywhere in this
-        path.
+        path, ever -- not here, not as a fallback.
 
         Leaving `cursor_store`/`dedupe_store` unset defaults to
         FileCursorStore/FileDedupeStore under `~/.salt/agents/<agent_id>/`
@@ -783,11 +773,10 @@ class Agent:
         re-delivering or silently skipping up to 7 days of retained
         updates. Pass `saltapp.socket.MemoryCursorStore()`/
         `MemoryDedupeStore()` explicitly to opt out of persistence (always
-        do this in a test). `poll_timeout` is accepted and ignored for
-        source compatibility with the pre-2026-09-22 short-poll transport;
-        `poll_limit` becomes the backfill page size (rows per
-        `GET /api/v1/agent/updates` page, only ever fetched when a
-        `replay_done` frame says the backlog replay was truncated)."""
+        do this in a test). `backfill_limit` is the page size for the ONE
+        on-demand catch-up call this ever makes on its own (rows per
+        `GET /api/v1/agent/updates` page, only when a `replay_done` frame
+        says the backlog replay was truncated -- see saltapp.cable)."""
         await self.ensure_identity()
         try:
             await self.client.set_delivery_mode(self.identity.api_key, "socket")
@@ -808,7 +797,7 @@ class Agent:
             tolerance_seconds=SOCKET_SIGNATURE_TOLERANCE_SECONDS,
             cursor_store=cursor_store,
             dedupe_store=dedupe_store,
-            backfill_limit=poll_limit,
+            backfill_limit=backfill_limit,
             min_backoff=min_backoff,
             max_backoff=max_backoff,
             ping_timeout=ping_timeout,
