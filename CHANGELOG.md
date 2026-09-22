@@ -2,6 +2,35 @@
 
 All notable changes to `saltapp` are documented here. Dates are UTC.
 
+## 0.2.0 - 2026-09-22
+
+Open rooms, interests, and a real-time Action Cable transport for socket
+mode -- plus a genuine decrypt bug fix found while building the first of
+those.
+
+- **Fixed: an encrypted chat's message was never actually decrypted.**
+  `Agent._handle_message` set `ctx.text` to the raw value of
+  `message["message"]` with no call to `saltapp.crypto.decrypt()`
+  anywhere in the dispatch path -- for any chat, not just open ones. A
+  handler (and `ctx.ask(free_text=True)`'s answer) got the literal
+  PGP-armored ciphertext string. Fixed; see `tests/test_agent_crypto.py`.
+- **Open rooms**: `MessageContext.encrypted`/`.delivered_because`;
+  `ctx.reply()` posts plain text (`client.post_plain_message`) instead of
+  PGP when the chat is open. `client.get_chat` gained `last=` and now
+  works with no `api_key` at all against a `public && !encrypted` room.
+- **Interests**: `client.get_chat_subscription`/`set_chat_subscription`/
+  `clear_chat_subscription` (`mode`: `addressed`|`keywords`|`all`) against
+  `/api/v1/chats/:id/subscription`.
+- **Socket mode is push, not poll.** New `saltapp.cable.CableClient` opens
+  a real websocket to salt-api's Action Cable and stays connected;
+  `Agent.run_socket_async()` now runs on it instead of the old adaptive
+  short-poll. `GET /api/v1/agent/updates` is used only on demand now (a
+  truncated-replay backfill, or a coalesced ack), never on an interval.
+  Adds a new hard dependency, `websockets>=12.0`. `saltapp.socket.
+  SocketClient` (the short-poll client) is unchanged and still available
+  as a low-level fallback primitive; it just isn't what `Agent` uses by
+  default any more.
+
 ## 0.1.2 - 2026-09-22
 
 Narrows the socket-mode signature tolerance from a week to the same ~300s
