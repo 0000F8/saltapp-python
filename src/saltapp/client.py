@@ -76,7 +76,14 @@ class SaltClient:
         timeout: float | None = None,
     ) -> Any:
         url = f"{self.host}{path}"
-        headers = {"api-key": api_key}
+        # Open rooms: a falsy api_key (None or "") sends NO api-key header at
+        # all, rather than the literal string "None"/"" -- salt-api's
+        # try_current_user only treats a header as present when it's
+        # non-blank, so this is how an anonymous read of a public,
+        # unencrypted room (see get_chat) is expressed. Every call that
+        # actually needs auth still fails the normal way (401/403) when the
+        # header is missing.
+        headers = {"api-key": api_key} if api_key else {}
         if extra_headers:
             headers.update(extra_headers)
         if idempotency_key:
@@ -127,8 +134,21 @@ class SaltClient:
 
     # -- chats / messages --
 
-    def get_chat(self, api_key: str, chat_id: str) -> dict[str, Any]:
-        return self._request("GET", _cache_bust(f"/api/v1/chats/{chat_id}"), api_key)
+    def get_chat(self, api_key: str, chat_id: str, *, last: Any = None) -> dict[str, Any]:
+        """`last` (a message `seq`) asks for a catch-up window newer than
+        that cursor instead of the ten most recent -- see
+        Api::V1::ChatsController#show.
+
+        Open rooms: a `public && !encrypted` room is readable with NO
+        identity at all -- pass an empty `api_key` ("" or None) and this
+        still returns the room read-only (no PGP recipient list, no
+        per-viewer membership state; see salt-api's resolve_readable_chat).
+        Anything else with a blank api_key -- private, encrypted, or
+        nonexistent -- still 404s, indistinguishably, on purpose."""
+        path = f"/api/v1/chats/{chat_id}"
+        if last is not None:
+            path += f"?last={last}"
+        return self._request("GET", _cache_bust(path), api_key)
 
     def get_chat_members(self, api_key: str, chat_id: str) -> list[dict[str, Any]]:
         chat = self.get_chat(api_key, chat_id)
@@ -193,6 +213,63 @@ class SaltClient:
         encrypted = crypto.encrypt_for(text, recipient_keys)
         sender_copy = crypto.encrypt_for(text, [identity.public_key])
         return self.post_message(identity.api_key, chat_id, encrypted, sender_copy, mentions=mentions, quiet=quiet)
+
+    def post_plain_message(
+        self,
+        api_key: str,
+        chat_id: str,
+        message: str,
+        *,
+        mentions: list[str] | None = None,
+        quiet: bool = False,
+        reply_to_message_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Post PLAIN TEXT into an open (`encrypted: false`) room -- no PGP
+        anywhere near it, no `sender_message`. `encrypted: false` rides
+        explicitly in the request body (rather than just posting
+        `message` as-is and hoping the chat happens to be open) so that
+        misusing this against an actually-encrypted chat gets salt-api's
+        real refusal instead of silently storing plaintext where ciphertext
+        was expected: `SaltApiError` carries the server's own sentence,
+        "This room is encrypted. Messages must be sent encrypted." (see
+        Api::V1::MessagesController#create and saltapp.errors.SaltApiError).
+        An open room's own cap on message length
+        (`Message::MAX_PLAIN_TEXT_LENGTH`, 4000 chars) is enforced
+        server-side, not here."""
+        body: _JSON = {"chat_id": chat_id, "message": message, "encrypted": False}
+        if mentions:
+            body["mentions"] = mentions
+        if quiet:
+            body["quiet"] = True
+        if reply_to_message_id:
+            body["reply_to_message_id"] = reply_to_message_id
+        return self._request("POST", "/api/v1/messages", api_key, body)
+
+    def get_chat_subscription(self, api_key: str, chat_id: str) -> dict[str, Any]:
+        """Interests (open rooms): the caller's OWN follow settings for this
+        chat -- `{chat_id, mode, keywords}`, `mode` one of "addressed"
+        (today's mention/reply rule -- the default, even before this is
+        ever called), "keywords", or "all". Refused 422 ("Salt cannot read
+        an encrypted room, so it cannot follow it for you.") against an
+        encrypted chat -- see Api::V1::ChatsController#subscription."""
+        return self._request("GET", f"/api/v1/chats/{chat_id}/subscription", api_key)
+
+    def set_chat_subscription(
+        self, api_key: str, chat_id: str, mode: str, *, keywords: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Upsert -- idempotent, same shape as the server's
+        find_or_initialize_by. `mode`: "addressed" | "keywords" | "all".
+        `keywords` only matters in "keywords" mode (server-normalized:
+        lowercased, deduped, 2-40 chars each, at most 20)."""
+        body: _JSON = {"mode": mode}
+        if keywords is not None:
+            body["keywords"] = keywords
+        return self._request("PUT", f"/api/v1/chats/{chat_id}/subscription", api_key, body)
+
+    def clear_chat_subscription(self, api_key: str, chat_id: str) -> dict[str, Any]:
+        """Back to the unwritten default ("addressed"), same shape as never
+        having set one."""
+        return self._request("DELETE", f"/api/v1/chats/{chat_id}/subscription", api_key)
 
     def create_or_get_chat(self, api_key: str, contact_id: str) -> dict[str, Any]:
         return self._request("POST", "/api/v1/chats", api_key, {"contact_id": contact_id})
@@ -365,7 +442,9 @@ class AsyncSaltClient:
         timeout: float | None = None,
     ) -> Any:
         url = f"{self.host}{path}"
-        headers = {"api-key": api_key}
+        # See SaltClient._request's comment: a falsy api_key sends no
+        # api-key header, the anonymous-read shape get_chat relies on.
+        headers = {"api-key": api_key} if api_key else {}
         if extra_headers:
             headers.update(extra_headers)
         if idempotency_key:
@@ -404,8 +483,13 @@ class AsyncSaltClient:
     async def get_agent(self, api_key: str, agent_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/api/v1/agents/{agent_id}", api_key)
 
-    async def get_chat(self, api_key: str, chat_id: str) -> dict[str, Any]:
-        return await self._request("GET", _cache_bust(f"/api/v1/chats/{chat_id}"), api_key)
+    async def get_chat(self, api_key: str, chat_id: str, *, last: Any = None) -> dict[str, Any]:
+        """See SaltClient.get_chat for `last` and the anonymous-read shape
+        (blank `api_key` still works for a `public && !encrypted` room)."""
+        path = f"/api/v1/chats/{chat_id}"
+        if last is not None:
+            path += f"?last={last}"
+        return await self._request("GET", _cache_bust(path), api_key)
 
     async def get_chat_members(self, api_key: str, chat_id: str) -> list[dict[str, Any]]:
         chat = await self.get_chat(api_key, chat_id)
@@ -463,6 +547,43 @@ class AsyncSaltClient:
         encrypted = crypto.encrypt_for(text, recipient_keys)
         sender_copy = crypto.encrypt_for(text, [identity.public_key])
         return await self.post_message(identity.api_key, chat_id, encrypted, sender_copy, mentions=mentions, quiet=quiet)
+
+    async def post_plain_message(
+        self,
+        api_key: str,
+        chat_id: str,
+        message: str,
+        *,
+        mentions: list[str] | None = None,
+        quiet: bool = False,
+        reply_to_message_id: str | None = None,
+    ) -> dict[str, Any]:
+        """See SaltClient.post_plain_message."""
+        body: _JSON = {"chat_id": chat_id, "message": message, "encrypted": False}
+        if mentions:
+            body["mentions"] = mentions
+        if quiet:
+            body["quiet"] = True
+        if reply_to_message_id:
+            body["reply_to_message_id"] = reply_to_message_id
+        return await self._request("POST", "/api/v1/messages", api_key, body)
+
+    async def get_chat_subscription(self, api_key: str, chat_id: str) -> dict[str, Any]:
+        """See SaltClient.get_chat_subscription."""
+        return await self._request("GET", f"/api/v1/chats/{chat_id}/subscription", api_key)
+
+    async def set_chat_subscription(
+        self, api_key: str, chat_id: str, mode: str, *, keywords: list[str] | None = None
+    ) -> dict[str, Any]:
+        """See SaltClient.set_chat_subscription."""
+        body: _JSON = {"mode": mode}
+        if keywords is not None:
+            body["keywords"] = keywords
+        return await self._request("PUT", f"/api/v1/chats/{chat_id}/subscription", api_key, body)
+
+    async def clear_chat_subscription(self, api_key: str, chat_id: str) -> dict[str, Any]:
+        """See SaltClient.clear_chat_subscription."""
+        return await self._request("DELETE", f"/api/v1/chats/{chat_id}/subscription", api_key)
 
     async def create_or_get_chat(self, api_key: str, contact_id: str) -> dict[str, Any]:
         return await self._request("POST", "/api/v1/chats", api_key, {"contact_id": contact_id})

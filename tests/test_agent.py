@@ -19,20 +19,26 @@ def make_agent(handler=None, *, agent_id: str = "self-agent") -> Agent:
     return Agent(host=HOST, api_key="key", public_key="pub", private_key="priv", agent_id=agent_id, client=client)
 
 
-def message_event(*, chat_id="c1", sender_id="human-1", sender_account_type="User", text="hi", mentions=None, chat_meta=None, delivery_id=None):
-    return Event(
-        type="message",
-        body={
-            "message": {
-                "chat_id": chat_id,
-                "message": text,
-                "user": {"id": sender_id, "account_type": sender_account_type, "username": "someone"},
-                "mentions": mentions or [],
-            },
-            "chat": chat_meta or {},
-        },
-        delivery_id=delivery_id,
-    )
+def message_event(
+    *, chat_id="c1", sender_id="human-1", sender_account_type="User", text="hi", mentions=None,
+    chat_meta=None, delivery_id=None, encrypted=False, delivered_because=None,
+):
+    """Defaults to an OPEN room (`encrypted=False`) so `text` above is
+    genuinely what `ctx.text` will be: every test in this file is about
+    dispatch/routing (the mention rule, loop guards, dedupe), not crypto --
+    see tests/test_agent_crypto.py for the decrypt path itself. Passing
+    `encrypted=True` here sends `text` as-is too (most callers that want
+    that path build real ciphertext directly instead)."""
+    message = {
+        "chat_id": chat_id,
+        "message": text,
+        "encrypted": encrypted,
+        "user": {"id": sender_id, "account_type": sender_account_type, "username": "someone"},
+        "mentions": mentions or [],
+    }
+    if delivered_because is not None:
+        message["delivered_because"] = delivered_because
+    return Event(type="message", body={"message": message, "chat": chat_meta or {}}, delivery_id=delivery_id)
 
 
 @pytest.mark.asyncio
