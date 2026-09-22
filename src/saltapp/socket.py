@@ -1,5 +1,14 @@
 # Socket-mode short-poll client, per the K2 contract (an agent with no
-# public URL receives exactly what a webhook would have delivered):
+# public URL receives exactly what a webhook would have delivered).
+#
+# AS OF 2026-09-22, `saltapp.agent.Agent.run_socket_async()` no longer uses
+# `SocketClient` -- it runs on `saltapp.cable.CableClient`, a real Action
+# Cable websocket connection, per the owner's ruling (via team lead): "DO
+# NOT USE POLLING as a mechanic EVER: pull on demand, push on address."
+# `SocketClient` stays here, unchanged, as a low-level fallback primitive
+# (and because `saltapp.cable` reuses its CursorStore/DedupeStore
+# implementations below) -- it is not what a new integration should reach
+# for to receive events.
 #
 #   GET /api/v1/agent/updates?after=<cursor>&timeout=<0..2>&limit=<1..100>
 #   -> 200 {updates: [{id, delivery_id, event, headers, body, created_at}],
@@ -259,7 +268,12 @@ class SocketClient:
     """Short-polls `GET /api/v1/agent/updates` and yields verified `Event`s,
     in cursor order. Transport concern only -- dedupe against the
     server-side event families, the mention rule and loop guards live in
-    `saltapp.agent.Agent`, which is the intended caller.
+    `saltapp.agent.Agent`.
+
+    NOT what `Agent.run_socket_async()` uses (see `saltapp.cable.
+    CableClient` instead, as of 2026-09-22) -- kept as a low-level
+    fallback primitive for a caller that specifically wants HTTP-only
+    long-polling with no persistent websocket.
     """
 
     def __init__(

@@ -33,6 +33,12 @@ dependencies = [
     "httpx>=0.24",
     "PGPy>=0.6.0",
     "cryptography>=41.0",
+    # Socket mode is push, not poll (2026-09-22): a real Action Cable
+    # websocket to salt-api (see saltapp.cable), not an interval poll of
+    # GET /api/v1/agent/updates. A hard dependency, same as salt-agent-sdk
+    # (TypeScript) treats `ws` -- there is no reduced-dependency fallback
+    # that still avoids polling.
+    "websockets>=12.0",
 ]
 
 [project.optional-dependencies]
