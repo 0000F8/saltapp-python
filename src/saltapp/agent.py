@@ -24,15 +24,21 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from saltapp import cards as cards_module
+from saltapp import crypto
+from saltapp.cable import (
+    PING_TIMEOUT_SECONDS,
+    RECONNECT_MAX_DELAY_SECONDS,
+    RECONNECT_MIN_DELAY_SECONDS,
+    CableClient,
+    Connector,
+)
 from saltapp.client import AsyncSaltClient
 from saltapp.errors import SaltAppError
 from saltapp.identity import Identity
 from saltapp.socket import (
-    DEFAULT_POLL_TIMEOUT_SECONDS,
     SOCKET_SIGNATURE_TOLERANCE_SECONDS,
     CursorStore,
     DedupeStore,
-    SocketClient,
 )
 from saltapp.webhook import Event, create_asgi_app
 
@@ -356,6 +362,8 @@ class MessageContext(_BaseContext):
         room_id: str,
         chat_meta: dict[str, Any],
         raw_message: dict[str, Any],
+        encrypted: bool = True,
+        delivered_because: str | None = None,
     ) -> None:
         super().__init__(agent, chat_id)
         self.sender_id = sender_id
@@ -364,6 +372,20 @@ class MessageContext(_BaseContext):
         self.room_id = room_id
         self.chat_meta = chat_meta
         self.raw_message = raw_message
+        # Open rooms (2026-09-22): whether this message (and therefore this
+        # chat, at least right now -- see Message#encrypted's own header)
+        # was plain text (False) or PGP ciphertext this agent's key already
+        # decrypted (True). reply() reads this to decide how to send back;
+        # a handler that wants to know for its own reasons (e.g. logging,
+        # or choosing not to say anything sensitive in an open room) reads
+        # it directly.
+        self.encrypted = encrypted
+        # Interests (open rooms): why THIS agent got THIS delivery --
+        # "mention"|"reply"|"keyword"|"all" -- present only for an open
+        # chat's delivery (see Message#formatted_message); None for an
+        # encrypted chat (today's mention/reply rule, unlabeled) or an open
+        # chat delivered before this field existed.
+        self.delivered_because = delivered_because
 
     def _default_answerer_id(self) -> Optional[str]:
         if self.sender.get("account_type") == "Agent":
@@ -383,7 +405,14 @@ class MessageContext(_BaseContext):
                 outgoing = f"@{addressee['username']} {text}"
             else:
                 mentions = None
-        await self.agent.client.send_message(self.agent.identity, self.chat_id, outgoing, mentions=mentions)
+        if self.encrypted:
+            await self.agent.client.send_message(self.agent.identity, self.chat_id, outgoing, mentions=mentions)
+        else:
+            # Open room: plain text, no PGP -- see
+            # AsyncSaltClient.post_plain_message.
+            await self.agent.client.post_plain_message(
+                self.agent.identity.api_key, self.chat_id, outgoing, mentions=mentions
+            )
 
 
 class CardInteractionContext(_BaseContext):
@@ -566,7 +595,30 @@ class Agent:
         if str(sender_id).lower() == str(self.identity.agent_id).lower():
             return  # never reply to our own message (webhook loop-back)
 
-        text = message.get("message") or ""
+        # Open rooms (2026-09-22): `encrypted` rides on every message now
+        # (Message#formatted_message) -- False means plain text, no PGP
+        # anywhere near it; True, or absent for an envelope shape that
+        # predates this field, means the usual PGP ciphertext, decrypted
+        # here with this agent's own private key (every chat member's
+        # public key is a recipient of every send -- see
+        # crypto.encrypt_for/AsyncSaltClient.send_message). A message this
+        # agent's key genuinely can't open -- wrong recipient, corrupt
+        # blob, wrong passphrase -- is dropped right here rather than
+        # handed to on_message as raw ciphertext (which is what happened
+        # before this fix: nothing ever called crypto.decrypt at all).
+        raw_text = message.get("message") or ""
+        encrypted = bool(message.get("encrypted", True))
+        if encrypted:
+            try:
+                text = crypto.decrypt(raw_text, self.identity.private_key, self.identity.passphrase)
+            except crypto.CryptoError as exc:
+                self._logger.error(
+                    "[chat %s] could not decrypt message %s: %s", chat_id, message.get("message_id"), exc
+                )
+                return
+        else:
+            text = raw_text
+
         sender_is_agent = sender.get("account_type") == "Agent"
 
         # An ask() waiting on free text from this chat gets first refusal --
@@ -608,6 +660,7 @@ class Agent:
         ctx = MessageContext(
             self, chat_id=chat_id, sender_id=sender_id, sender=sender, text=text,
             room_id=room_id, chat_meta=chat_meta, raw_message=message,
+            encrypted=encrypted, delivered_because=message.get("delivered_because"),
         )
         await handler(ctx)
 
@@ -677,24 +730,22 @@ class Agent:
             health_extra=self.health_extra(),
         )
 
-    # -- socket mode --
+    # -- socket mode (no public URL -- a real Action Cable connection, not
+    # -- a poll loop; see saltapp.cable's header for the full contract) ----
 
     def run_socket(
         self,
         *,
         cursor_store: CursorStore | None = None,
         dedupe_store: DedupeStore | None = None,
-        poll_timeout: int = DEFAULT_POLL_TIMEOUT_SECONDS,
-        poll_limit: int = 100,
+        backfill_limit: int = 100,
     ) -> None:
         """Blocking entry point for socket mode: no public URL needed. Sets
         `users.delivery_mode = "socket"` on salt-api (idempotent), then
-        short-polls (adaptively -- see saltapp.socket) forever. Ctrl-C to
-        stop."""
+        connects to Action Cable and stays connected -- see
+        `run_socket_async`. Ctrl-C to stop."""
         asyncio.run(
-            self.run_socket_async(
-                cursor_store=cursor_store, dedupe_store=dedupe_store, poll_timeout=poll_timeout, poll_limit=poll_limit
-            )
+            self.run_socket_async(cursor_store=cursor_store, dedupe_store=dedupe_store, backfill_limit=backfill_limit)
         )
 
     async def run_socket_async(
@@ -702,42 +753,58 @@ class Agent:
         *,
         cursor_store: CursorStore | None = None,
         dedupe_store: DedupeStore | None = None,
-        poll_timeout: int = DEFAULT_POLL_TIMEOUT_SECONDS,
-        poll_limit: int = 100,
+        backfill_limit: int = 100,
+        min_backoff: float = RECONNECT_MIN_DELAY_SECONDS,
+        max_backoff: float = RECONNECT_MAX_DELAY_SECONDS,
+        ping_timeout: float = PING_TIMEOUT_SECONDS,
+        connector: Connector | None = None,
         stop: asyncio.Event | None = None,
     ) -> None:
-        """Leaving `cursor_store`/`dedupe_store` unset defaults to
+        """No public URL needed: opens a websocket to salt-api's Action
+        Cable (`AgentUpdatesChannel`) and stays connected -- salt-api
+        PUSHES each event the instant it happens (see `saltapp.cable`'s
+        header comment for the full wire contract). An idle, caught-up
+        agent makes zero requests; there is no polling anywhere in this
+        path, ever -- not here, not as a fallback.
+
+        Leaving `cursor_store`/`dedupe_store` unset defaults to
         FileCursorStore/FileDedupeStore under `~/.salt/agents/<agent_id>/`
         (dirs 0700, files 0600) -- a restart resumes instead of
         re-delivering or silently skipping up to 7 days of retained
         updates. Pass `saltapp.socket.MemoryCursorStore()`/
         `MemoryDedupeStore()` explicitly to opt out of persistence (always
-        do this in a test)."""
+        do this in a test). `backfill_limit` is the page size for the ONE
+        on-demand catch-up call this ever makes on its own (rows per
+        `GET /api/v1/agent/updates` page, only when a `replay_done` frame
+        says the backlog replay was truncated -- see saltapp.cable)."""
         await self.ensure_identity()
         try:
             await self.client.set_delivery_mode(self.identity.api_key, "socket")
         except Exception as exc:  # noqa: BLE001 -- an agent with a blank callback is socket by default anyway
-            self._logger.error("[socket] set_delivery_mode failed (continuing anyway): %s", exc)
+            self._logger.error("[cable] set_delivery_mode failed (continuing anyway): %s", exc)
 
-        socket_client = SocketClient(
+        cable_client = CableClient(
             self.client,
             self.identity.api_key,
             agent_id=self.identity.agent_id,
             webhook_secret_provider=lambda: self.webhook_secret,
             verify_signatures=self.verify_signatures,
             # SOCKET_SIGNATURE_TOLERANCE_SECONDS rather than
-            # self.signature_tolerance_seconds: the socket path keeps its own
-            # named constant because adapters import it, but since serve-time
-            # signing landed both are ~300s. See saltapp.socket's header.
+            # self.signature_tolerance_seconds: the socket/cable path keeps
+            # its own named constant because adapters import it, but since
+            # serve-time signing landed both are ~300s. See saltapp.socket's
+            # header.
             tolerance_seconds=SOCKET_SIGNATURE_TOLERANCE_SECONDS,
             cursor_store=cursor_store,
             dedupe_store=dedupe_store,
-            poll_timeout=poll_timeout,
-            poll_limit=poll_limit,
+            backfill_limit=backfill_limit,
+            min_backoff=min_backoff,
+            max_backoff=max_backoff,
+            ping_timeout=ping_timeout,
+            connector=connector,
             logger=self._logger,
         )
-        self._logger.info("[socket] listening as agent %s", self.identity.agent_id or "(unknown id)")
-        await socket_client.run(self.dispatch, stop=stop)
+        await cable_client.run(self.dispatch, stop=stop)
 
 
 def tool_context(agent: "Agent", chat_id: str) -> _BaseContext:

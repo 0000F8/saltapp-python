@@ -28,8 +28,9 @@ assumes you've read that.
 | `saltapp.cards` | `card.rb`'s validator (salt-api) + `actions.ts`'s card builder comments | Block builders: `section`/`field`/`divider`/`image`/`button`/`pay_button`/`handoff_button`/`actions`/`blocks`, with the same limits (`MAX_BLOCKS` etc.) as the server validator. |
 | `saltapp.client` | `client.ts` + `salt_client.py` | `SaltClient` (sync) / `AsyncSaltClient` (async): messages, chats, cards, payment requests, invoices, products, usage, hand-offs. |
 | `saltapp.webhook` | `webhook.ts`'s signature check + `webhook_auth.py` | `verify_signature`, `handle()` (framework-neutral), `create_asgi_app` (zero-dependency ASGI). |
-| `saltapp.socket` | K2 contract in `design-fleet/runs/2026-09-17-distribution/LANES.md`, revised 2026-09-18 after a security review | `SocketClient`: short-polls `GET /api/v1/agent/updates` adaptively (1s after activity, backing off to 5s idle -- Action Cable is the real push path, this is the fallback), verifies every envelope at a wide tolerance (retention + 1h) since an outbox row can sit unpolled for days, dedupes on delivery_id (persistent, file-backed by default), halts (never advances the cursor) on a transient verification failure, backs off on transport errors. |
-| `saltapp.agent` | `webhook.ts`'s dispatch logic (mention rule, loop guard, GACM, dedupe) + this SDK's own `ask()`/`approve()` | `Agent`: decorators, dispatch, `run_socket()`, `asgi_app()`. |
+| `saltapp.socket` | K2 contract in `design-fleet/runs/2026-09-17-distribution/LANES.md`, revised 2026-09-18 after a security review, then reduced to an on-demand primitive 2026-09-22 (owner, via team lead: "never polling" applies to a documented fallback too) | `MemoryCursorStore`/`FileCursorStore`, `MemoryDedupeStore`/`FileDedupeStore` (persistent, file-backed by default -- shared with `saltapp.cable`). `SocketClient.drain_once(after=None)`: pages `GET /api/v1/agent/updates` (`timeout=0`) until a page comes back empty, then RETURNS -- no loop, no interval, nothing runs on its own schedule. `Agent.run_socket_async()` doesn't use this at all (see `saltapp.cable`); `CableClient._backfill` calls `drain_once` for its own on-demand catch-up, and a tool-shaped host can call it directly each time it's invoked. |
+| `saltapp.cable` | `salt-agent-sdk/src/socket.ts`'s `createSocketClient`, rewritten onto Action Cable 2026-09-22 (owner, via team lead: "DO NOT USE POLLING as a mechanic EVER: pull on demand, push on address") | `CableClient`: a real websocket to `wss://<host>/cable` (`AgentUpdatesChannel`, api-key handshake header), subscribe/replay/`replay_done`, live dispatch, on-demand backfill (`more: true` only) and a coalesced ack via `GET /api/v1/agent/updates` -- never on an interval. Reconnects with jittered exponential backoff (1s..60s), honours `Retry-After` on a 429 handshake, treats 30s without a `{type:"ping"}` as dead. Deliberately simpler than the TS reference in one place (no strict buffer-then-drain ordering during backfill -- correctness still holds via DedupeStore, see the module's header) and stricter in another (dispatch runs as its own `asyncio.create_task`, not awaited inline, because `ctx.ask()` can block a handler on a reply that can only arrive by this same loop continuing to run -- a primitive the TS SDK doesn't have yet). |
+| `saltapp.agent` | `webhook.ts`'s dispatch logic (mention rule, loop guard, GACM, dedupe) + this SDK's own `ask()`/`approve()` | `Agent`: decorators, dispatch, `run_socket()` (now cable-backed), `asgi_app()`. `MessageContext.encrypted`/`.delivered_because` (open rooms, 2026-09-22); `_handle_message` actually calls `crypto.decrypt()` for an encrypted delivery now -- see the dated note below, this was a real bug. |
 | `saltapp.integrations.fastapi` / `.flask` | New | Thin adapters mounting `Agent` into an app you already have. |
 | `saltapp.integrations._tools` | New | `SaltTools`: the six shared actions (`send_message`/`ask_human`/`request_payment`/`send_invoice`/`post_card`/`get_payment_status`) every framework integration below wraps -- one place the business logic and the `ask_human` HITL primitive live. |
 | `saltapp.integrations.{langchain,crewai,pydantic_ai,agno,adk,openai_agents,smolagents,llamaindex,camel}` | New | Nine framework integrations, each a thin shell over `_tools.SaltTools` -- see "Framework integrations" below. |
@@ -87,11 +88,13 @@ revisit this file's note if that lands.
 
 Concurrency note: `ask()`'s wait is implemented with a `threading.Event`
 awaited via `asyncio.to_thread`, specifically so it does not block the
-event loop `Agent.run_socket_async()`/`asgi_app()` run on -- the socket
-poller keeps polling (and can deliver the very update that resolves the
-ask) while a handler is suspended inside `ctx.ask()`. `SocketClient.run()`
-schedules each event's dispatch as its own `asyncio.create_task`, not an
-inline `await`, for the same reason.
+event loop `Agent.run_socket_async()`/`asgi_app()` run on -- the cable
+connection keeps running (and can deliver the very update that resolves
+the ask) while a handler is suspended inside `ctx.ask()`.
+`saltapp.cable.CableClient.run()` schedules each event's dispatch as its
+own `asyncio.create_task`, not an inline `await`, for the same reason --
+see `saltapp/cable.py`'s header comment ("DELIBERATE STRENGTHENING") for
+why that matters specifically because of `ctx.ask()`.
 
 **M2 parity fix (security review, 2026-09-18)**: `ask()`/`approve()` now
 name ONE expected answerer (`from_user_id`, defaulting to whoever
@@ -180,6 +183,63 @@ before trusting one.
   in-memory. Every `examples/*.py` file and the README were updated to
   drop the old explicit `FileCursorStore("./data/..._cursor.txt")` in
   favor of the new default.
+- **Open rooms, interests, and Action Cable (2026-09-22)**, from a survey
+  of every Salt agent integration against three in-flight server changes:
+  1. **A genuine decrypt bug, found and fixed.** `Agent._handle_message`
+     used to set `ctx.text = message.get("message")` directly, raw --
+     `saltapp.crypto.decrypt()` was never called anywhere in the dispatch
+     path, for ANY chat, encrypted or not, contradicting the README's own
+     quickstart. It happened to look like it worked because every test
+     fixture's `text` was already plaintext. Fixed in `_handle_message`:
+     `encrypted = bool(message.get("encrypted", True))` (default True --
+     safe for an envelope shape that predates the field), and a real
+     `crypto.decrypt()` call when it is, with a `CryptoError` dropping the
+     message (logged) rather than handing a handler unreadable ciphertext.
+     `tests/test_agent_crypto.py` is the regression suite, built on real
+     PGP round trips via `conftest.py`'s `keypair_a`/`keypair_b` fixtures
+     -- including proof that `ctx.ask(free_text=True)`'s answer used to be
+     raw ciphertext too (same bug, same fix, one call site).
+  2. **Open rooms.** `MessageContext.encrypted`/`.delivered_because`
+     (`False`/set only for an open chat's delivery); `ctx.reply()` branches
+     on `self.encrypted` to call `client.post_plain_message` instead of
+     `client.send_message` when the chat is open. `client.
+     post_plain_message` sends `encrypted: false` explicitly (not just
+     "post whatever string" and hope) so misuse against a real encrypted
+     chat gets salt-api's actual 422 refusal, not silently-stored
+     plaintext. `client.get_chat` gained `last=` (catch-up cursor,
+     `Api::V1::ChatsController#show`'s `?last=`) and now sends NO
+     `api-key` header at all when `api_key` is falsy -- `_request` in both
+     `SaltClient`/`AsyncSaltClient` was changed the same way -- which is
+     what lets an anonymous caller read a `public && !encrypted` room (see
+     `resolve_readable_chat` in salt-api).
+  3. **Interests.** `client.get_chat_subscription`/`set_chat_subscription`/
+     `clear_chat_subscription` against `/api/v1/chats/:id/subscription`
+     (`mode`: `addressed`|`keywords`|`all`).
+  4. **Action Cable, not polling** (owner, via team lead: "DO NOT USE
+     POLLING as a mechanic EVER: pull on demand, push on address"): new
+     `saltapp.cable.CableClient` is what `Agent.run_socket_async()` runs.
+     A follow-up from the SAME owner ruling, once "kept `SocketClient` as
+     a documented fallback" was pointed out to still BE a poll loop
+     (2026-09-22, second pass): `SocketClient.run()` -- the adaptive
+     poll-forever loop, and `ACTIVE_POLL_DELAY_SECONDS`/
+     `IDLE_POLL_DELAY_SECONDS` -- is DELETED, not kept. What's left is
+     `SocketClient.drain_once(after=None)`: pages `GET /api/v1/agent/
+     updates` (`timeout=0` always) until a page comes back empty, then
+     returns and stops -- one on-demand call, never a loop that decides to
+     call itself again. `CableClient._backfill` reuses it (`self._drain`)
+     for its own on-demand catch-up, the ONLY time it's invoked at all
+     (`replay_done.more`, never on an interval); a tool-shaped host (runs
+     only when invoked, never in the background) can call it directly the
+     same way. `SocketClient.exhausted` (set by every `drain_once` call)
+     tells a caller whether it actually reached empty or stopped early on
+     a transient verification halt -- an empty `events` list alone can't
+     say which. See the module map above and `saltapp/cable.py`'s/
+     `saltapp/socket.py`'s own header comments for the full contracts, and
+     `tests/test_cable.py`/`tests/test_socket.py` for coverage (no real
+     network in any test here).
+  5. **Not done, and why**: health-from-evidence work was N/A for this
+     repo -- it never self-initiated `/health` polling to begin with
+     (only ever served one passively), so there was nothing to change.
 
 ## The webhook-signature test vector
 

@@ -40,7 +40,9 @@ async def on_message(ctx) -> None:
         instructions="You help the human message, ask questions, and request payments on Salt. Be brief.",
     )
     # smolagents' agent.run() is blocking (its own HTTP calls under the
-    # hood) -- run it off the event loop so the socket poller keeps going.
+    # hood) -- run it off the event loop so the cable connection stays
+    # responsive (pings, other messages, a reply an in-flight ctx.ask()
+    # is waiting on) while this one call runs.
     result = await asyncio.to_thread(smol_agent.run, ctx.text)
     await ctx.reply(str(result))
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "saltapp"
-version = "0.1.2"
+version = "0.2.0"
 description = "Python SDK for Salt (saltapp.ai) agents: webhook/socket receiving, PGP encrypt/decrypt, a typed REST client, card builders, and an Agent helper with ask/approve."
 readme = "README.md"
 license = "MIT"
@@ -33,6 +33,12 @@ dependencies = [
     "httpx>=0.24",
     "PGPy>=0.6.0",
     "cryptography>=41.0",
+    # Socket mode is push, not poll (2026-09-22): a real Action Cable
+    # websocket to salt-api (see saltapp.cable), not an interval poll of
+    # GET /api/v1/agent/updates. A hard dependency, same as salt-agent-sdk
+    # (TypeScript) treats `ws` -- there is no reduced-dependency fallback
+    # that still avoids polling.
+    "websockets>=12.0",
 ]
 
 [project.optional-dependencies]

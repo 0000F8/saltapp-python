@@ -200,6 +200,96 @@ async def test_async_client_error_raises_salt_api_error():
     await client.aclose()
 
 
+def test_post_plain_message_shape():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return json_response(200, {"id": "m1"})
+
+    client = make_sync_client(handler)
+    client.post_plain_message("key", "chat1", "hello room", mentions=["u1"], reply_to_message_id="m0")
+    assert captured["body"] == {
+        "chat_id": "chat1", "message": "hello room", "encrypted": False,
+        "mentions": ["u1"], "reply_to_message_id": "m0",
+    }
+
+
+def test_post_plain_message_refused_on_encrypted_chat_surfaces_the_sentence():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return json_response(422, {"error": "This room is encrypted. Messages must be sent encrypted."})
+
+    client = make_sync_client(handler)
+    with pytest.raises(SaltApiError) as excinfo:
+        client.post_plain_message("key", "chat1", "hello")
+    assert "This room is encrypted. Messages must be sent encrypted." in str(excinfo.value)
+    assert excinfo.value.status == 422
+
+
+def test_get_chat_with_no_api_key_sends_no_api_key_header():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["headers"] = dict(request.headers)
+        return json_response(200, {"session": {"id": "c1", "public": True, "encrypted": False, "member": False}})
+
+    client = make_sync_client(handler)
+    result = client.get_chat("", "c1")
+    assert "api-key" not in captured["headers"]
+    assert result["session"]["member"] is False
+
+
+def test_get_chat_last_param():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return json_response(200, {"session": {}, "messages": []})
+
+    client = make_sync_client(handler)
+    client.get_chat("key", "c1", last=42)
+    assert "last=42" in captured["url"]
+
+
+def test_chat_subscription_get_set_clear():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, str(request.url), json.loads(request.content) if request.content else None))
+        return json_response(200, {"chat_id": "c1", "mode": "keywords", "keywords": ["salt"]})
+
+    client = make_sync_client(handler)
+    client.get_chat_subscription("key", "c1")
+    client.set_chat_subscription("key", "c1", "keywords", keywords=["salt", "agents"])
+    client.clear_chat_subscription("key", "c1")
+
+    assert calls[0] == ("GET", f"{HOST}/api/v1/chats/c1/subscription", None)
+    assert calls[1] == ("PUT", f"{HOST}/api/v1/chats/c1/subscription", {"mode": "keywords", "keywords": ["salt", "agents"]})
+    assert calls[2] == ("DELETE", f"{HOST}/api/v1/chats/c1/subscription", None)
+
+
+@pytest.mark.asyncio
+async def test_async_post_plain_message_and_anonymous_get_chat():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages"):
+            captured["post_body"] = json.loads(request.content)
+            captured["post_headers"] = dict(request.headers)
+            return json_response(200, {"id": "m1"})
+        captured["get_headers"] = dict(request.headers)
+        return json_response(200, {"session": {"public": True, "encrypted": False, "member": False}})
+
+    client = make_async_client(handler)
+    await client.post_plain_message("agent-key", "c1", "hi everyone")
+    await client.get_chat(None, "c1")
+    await client.aclose()
+
+    assert captured["post_body"] == {"chat_id": "c1", "message": "hi everyone", "encrypted": False}
+    assert captured["post_headers"]["api-key"] == "agent-key"
+    assert "api-key" not in captured["get_headers"]
+
+
 def test_get_agent_updates_query_params():
     captured = {}
 
