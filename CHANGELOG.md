@@ -2,6 +2,46 @@
 
 All notable changes to `saltapp` are documented here. Dates are UTC.
 
+## 0.3.0 - 2026-09-23
+
+Mandates R2 ("Acting for you"), mirroring salt-agent-sdk 0.12.0.
+
+- **`SaltClient.act_for(principal_id, mandate_id=None)` /
+  `AsyncSaltClient.act_for(...)`** return an `ActingSaltClient` /
+  `AsyncActingSaltClient` -- a subclass sharing the base client's
+  `httpx` session, same method surface, overriding only `_request` to
+  send `X-Salt-Act-For` (+ `X-Salt-Mandate` when pinned) and an
+  auto-generated `Idempotency-Key` on every POST/PATCH that doesn't
+  already have one. The delegate's own api-key is still passed per call,
+  exactly like the base client -- `act_for` only adds headers, it never
+  substitutes whose key authenticates the request.
+- **The `{"asked": True, "exercise_id":, "expires_at":}` shape.** An
+  ask-mode mandate call answers `202 {"status": "asked", ...}` rather
+  than raising -- both `SaltClient`/`AsyncSaltClient._request` now
+  resolve that to `{"asked": True, "exercise_id":, "expires_at":}`
+  (`saltapp.client.is_asked` narrows it). The base (non-acting) client is
+  unaffected in practice: salt-api's ask/mandate resolver only runs when
+  `X-Salt-Act-For` is present at all.
+- **`client.prepare_transfer(...)`** (`POST /transfers/prepare`):
+  `money.pay`'s mode is forced to `ask`, so this always resolves the
+  asked shape, never a Transfer.
+- **Mandate management**, always as yourself, never through `act_for`:
+  `list_mandates`, `get_mandate`, `propose_mandate`, `update_mandate`,
+  `accept_mandate`, `renew_mandate`, `pause_mandate`, `resume_mandate`,
+  `revoke_mandate`, `get_mandate_exercises`, `get_open_mandate_exercises`,
+  `decide_mandate_exercise`.
+- **Six new `Agent` events**, same rail as
+  `card_interaction`/`invoice_paid` (`saltapp.webhook.classify` extended
+  to recognize them, so webhook, socket-drain and cable delivery all pick
+  them up for free): `on_mandate_offered` (`MandateOfferedContext`:
+  `.mandate`, `await .accept()`), `on_mandate_activated` /
+  `on_mandate_paused` / `on_mandate_revoked` (`MandateLifecycleContext`:
+  `.mandate`, informational), `on_approval_requested`
+  (`ApprovalRequestedContext`: `.exercise`, `await .decide(decision,
+  note=None)`), `on_approval_decided` (`ApprovalDecidedContext`:
+  `.exercise`, informational only). None of the six carry
+  `reply()`/`ask()` -- they aren't chat messages.
+
 ## 0.2.0 - 2026-09-22
 
 Open rooms, interests, and a real-time Action Cable transport for socket
