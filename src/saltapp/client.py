@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from typing import Any, Mapping, Sequence
 
 import httpx
@@ -21,6 +22,11 @@ from saltapp.errors import SaltApiError
 from saltapp.identity import Identity
 
 _JSON = dict[str, Any]
+
+# Headers salt-api reads for a mandate-governed call (Mandates R2). See
+# SaltClient.act_for / AsyncSaltClient.act_for below.
+ACT_FOR_HEADER = "X-Salt-Act-For"
+MANDATE_HEADER = "X-Salt-Mandate"
 
 
 def _cache_bust(path: str) -> str:
@@ -33,6 +39,27 @@ def _parse_error_body(response: httpx.Response) -> Any:
         return response.json()
     except Exception:  # noqa: BLE001
         return response.text
+
+
+def _maybe_asked(status_code: int, data: Any) -> Any:
+    """A mandate-governed call in "ask" mode never 4xx/5xxs and never
+    raises -- salt-api answers 202 `{"status": "asked", "exercise_id":,
+    "expires_at":}` instead (see act_for below, and salt-api's
+    authorize_acting!). Reachable only through a call that actually
+    carried X-Salt-Act-For; an ordinary (non-acting) call never gets
+    asked, since the mandate resolver only runs when that header is
+    present -- but the check lives here, once, for both clients rather
+    than duplicated in every acting subclass."""
+    if status_code == 202 and isinstance(data, dict) and data.get("status") == "asked":
+        return {"asked": True, "exercise_id": data.get("exercise_id"), "expires_at": data.get("expires_at")}
+    return data
+
+
+def is_asked(value: Any) -> bool:
+    """Narrows a `SaltClient`/`AsyncSaltClient` call's result to the
+    `{"asked": True, "exercise_id":, "expires_at":}` shape `act_for`'s
+    client can resolve to instead of the call's normal payload."""
+    return isinstance(value, dict) and value.get("asked") is True
 
 
 def _encryption_recipients(members: Sequence[Mapping[str, Any]], self_agent_id: str) -> list[str]:
@@ -93,7 +120,7 @@ class SaltClient:
             raise SaltApiError(method, url, response.status_code, _parse_error_body(response))
         if response.status_code == 204 or not response.content:
             return None
-        return response.json()
+        return _maybe_asked(response.status_code, response.json())
 
     # -- identity / agent admin --
 
@@ -380,6 +407,133 @@ class SaltClient:
     def get_transfer(self, api_key: str, transfer_id: str) -> dict[str, Any]:
         return self._request("GET", f"/api/v1/transfers/{transfer_id}", api_key)
 
+    def prepare_transfer(
+        self,
+        api_key: str,
+        *,
+        wallet_id: str,
+        amount: str,
+        destination_address: str | None = None,
+        receiver_id: str | None = None,
+        chain: str | None = None,
+        note: str | None = None,
+        chat_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Prepares a governed payment for approval -- `money.pay`'s mode is
+        FORCED to `ask`, so this always resolves the `{"asked": True,
+        "exercise_id":, "expires_at":}` shape (see `is_asked`/`act_for`),
+        never a Transfer, whether called through `act_for` or (in the
+        unusual case of preparing your own payment) as yourself. Once
+        approved, settle it with `transfers#create`'s own `exercise_id`."""
+        body: _JSON = {"wallet_id": wallet_id, "amount": str(amount)}
+        if destination_address is not None:
+            body["destination_address"] = destination_address
+        if receiver_id is not None:
+            body["receiver_id"] = receiver_id
+        if chain is not None:
+            body["chain"] = chain
+        if note is not None:
+            body["note"] = note
+        if chat_id is not None:
+            body["chat_id"] = chat_id
+        return self._request("POST", "/api/v1/transfers/prepare", api_key, body)
+
+    # -- mandates ("Acting for you") management -- always as yourself, never through act_for --
+
+    def list_mandates(self, api_key: str, *, role: str | None = None, status: str | None = None) -> dict[str, Any]:
+        """Every mandate the caller is party to, as grantor and/or grantee."""
+        params = []
+        if role is not None:
+            params.append(f"role={role}")
+        if status is not None:
+            params.append(f"status={status}")
+        path = "/api/v1/mandates" + (("?" + "&".join(params)) if params else "")
+        return self._request("GET", path, api_key)
+
+    def get_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
+        return self._request("GET", f"/api/v1/mandates/{mandate_id}", api_key)
+
+    def propose_mandate(self, api_key: str, params: _JSON) -> dict[str, Any]:
+        """Grantor creates (a proposal the grantee must accept, or
+        auto-active for an account the caller governs), or a grantee
+        proposes UP by passing `grantor_id` in `params` instead. `params`
+        mirrors salt-api's `POST /mandates` body -- see PLAN.md's Mandate
+        JSON shape (`grantee_id`/`grantee_username`, `label`,
+        `capabilities: [{capability, selector, mode, constraints}]`,
+        `standing`, `expires_at`, `parent_id`, `chat_id`)."""
+        return self._request("POST", "/api/v1/mandates", api_key, params)
+
+    def update_mandate(self, api_key: str, mandate_id: str, params: _JSON) -> dict[str, Any]:
+        """New version, compare-and-swap on `params["version"]` -- a 409
+        SaltApiError means it changed under you; re-fetch with
+        `get_mandate` and retry against the new version."""
+        return self._request("PATCH", f"/api/v1/mandates/{mandate_id}", api_key, params)
+
+    def accept_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
+        """Grantee accepts an offered mandate (binds its current key
+        fingerprint), or the grantor activates one still `proposed` by the
+        grantee. See `MandateOfferedContext.accept()` in `saltapp.agent`,
+        which calls this for an incoming `mandate_offered` event."""
+        return self._request("POST", f"/api/v1/mandates/{mandate_id}/accept", api_key)
+
+    def renew_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
+        """Standing mandates only: +90 days from now."""
+        return self._request("POST", f"/api/v1/mandates/{mandate_id}/renew", api_key)
+
+    def pause_mandate(self, api_key: str, mandate_id: str, reason: str | None = None) -> dict[str, Any]:
+        return self._request("POST", f"/api/v1/mandates/{mandate_id}/pause", api_key, {"reason": reason} if reason else None)
+
+    def resume_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
+        return self._request("POST", f"/api/v1/mandates/{mandate_id}/resume", api_key)
+
+    def revoke_mandate(self, api_key: str, mandate_id: str, reason: str | None = None) -> dict[str, Any]:
+        """The grantor, or a governor of either side, can revoke --
+        cascades to any child mandates."""
+        return self._request("POST", f"/api/v1/mandates/{mandate_id}/revoke", api_key, {"reason": reason} if reason else None)
+
+    def get_mandate_exercises(
+        self, api_key: str, mandate_id: str, *, before: str | None = None, limit: int | None = None
+    ) -> dict[str, Any]:
+        """A mandate's trail, id-descending. `refusal` on a row is only
+        populated when the caller is the principal or its governor --
+        salt-api's own viewer check, not re-derived here."""
+        params = []
+        if before is not None:
+            params.append(f"before={before}")
+        if limit is not None:
+            params.append(f"limit={limit}")
+        path = f"/api/v1/mandates/{mandate_id}/exercises" + (("?" + "&".join(params)) if params else "")
+        return self._request("GET", path, api_key)
+
+    def get_open_mandate_exercises(self, api_key: str) -> dict[str, Any]:
+        """Every open ask (decision `"asked"`, not yet expired) the caller
+        can decide right now."""
+        return self._request("GET", "/api/v1/mandates/exercises/open", api_key)
+
+    def decide_mandate_exercise(self, api_key: str, exercise_id: Any, decision: str, note: str | None = None) -> dict[str, Any]:
+        """Approve or deny one open ask (`decision`: "approve" | "deny").
+        See `ApprovalRequestedContext.decide()` in `saltapp.agent`, which
+        calls this for an incoming `approval_requested` event."""
+        return self._request("POST", f"/api/v1/mandates/exercises/{exercise_id}/decide", api_key, {"decision": decision, "note": note})
+
+    def act_for(self, principal_id: str, mandate_id: str | None = None) -> "ActingSaltClient":
+        """Returns a client bound to acting for `principal_id`: every call
+        it makes carries `X-Salt-Act-For: <principal_id>` (and
+        `X-Salt-Mandate: <mandate_id>` when one is pinned rather than
+        letting salt-api pick the strictest match), plus an
+        auto-generated `Idempotency-Key` on every POST/PATCH that didn't
+        already supply one. Same method surface as this client -- shares
+        the same underlying `httpx.Client` (no new connection pool) --
+        salt-api's own capability map decides what's actually allowed;
+        this SDK doesn't maintain a second copy of that map. Any call can
+        resolve the `{"asked": True, ...}` shape instead of its normal
+        payload (never a raised error) -- check with `is_asked(result)`
+        before reading the normal fields. Mandate management
+        (`list_mandates`/`accept_mandate`/etc.) is unaffected: it's always
+        done as yourself, never on someone else's behalf, even when called
+        on the client `act_for` returns."""
+        return ActingSaltClient(self, principal_id, mandate_id)
+
     # -- hand-offs --
 
     def hand_off(self, api_key: str, chat_id: str, to_agent_id: str, reason: str | None = None) -> dict[str, Any]:
@@ -415,6 +569,43 @@ class SaltClient:
             self._request("POST", "/api/v1/events", api_key, {"name": name, "properties": properties or {}})
         except Exception:  # noqa: BLE001 -- an analytics post must never fail a reply
             pass
+
+
+class ActingSaltClient(SaltClient):
+    """Returned by `SaltClient.act_for(...)`. A subclass rather than a
+    wrapper so every inherited method (post_message, request_payment,
+    prepare_transfer, ...) picks up the overridden `_request` below for
+    free, the same way client.ts's `buildMethods(request)` factory gets
+    reused for its acting client by swapping which `request` closure the
+    same method bodies call. Do not construct directly -- use
+    `SaltClient.act_for`."""
+
+    def __init__(self, base: SaltClient, principal_id: str, mandate_id: str | None = None) -> None:
+        self.host = base.host
+        self._owns_http = False  # never closes the base client's shared session
+        self.http = base.http
+        self._principal_id = principal_id
+        self._mandate_id = mandate_id
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        api_key: str,
+        json_body: _JSON | None = None,
+        *,
+        idempotency_key: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        headers = {ACT_FOR_HEADER: str(self._principal_id)}
+        if self._mandate_id is not None:
+            headers[MANDATE_HEADER] = str(self._mandate_id)
+        if extra_headers:
+            headers.update(extra_headers)
+        if idempotency_key is None and method in ("POST", "PATCH"):
+            idempotency_key = uuid.uuid4().hex
+        return super()._request(method, path, api_key, json_body, idempotency_key=idempotency_key, extra_headers=headers, timeout=timeout)
 
 
 class AsyncSaltClient:
@@ -460,7 +651,7 @@ class AsyncSaltClient:
             raise SaltApiError(method, url, response.status_code, _parse_error_body(response))
         if response.status_code == 204 or not response.content:
             return None
-        return response.json()
+        return _maybe_asked(response.status_code, response.json())
 
     async def who_am_i(self, api_key: str) -> dict[str, Any]:
         return await self._request("GET", _cache_bust("/api/v1/agents/webhook_secret"), api_key)
@@ -682,6 +873,97 @@ class AsyncSaltClient:
     async def get_transfer(self, api_key: str, transfer_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/api/v1/transfers/{transfer_id}", api_key)
 
+    async def prepare_transfer(
+        self,
+        api_key: str,
+        *,
+        wallet_id: str,
+        amount: str,
+        destination_address: str | None = None,
+        receiver_id: str | None = None,
+        chain: str | None = None,
+        note: str | None = None,
+        chat_id: str | None = None,
+    ) -> dict[str, Any]:
+        """See SaltClient.prepare_transfer."""
+        body: _JSON = {"wallet_id": wallet_id, "amount": str(amount)}
+        if destination_address is not None:
+            body["destination_address"] = destination_address
+        if receiver_id is not None:
+            body["receiver_id"] = receiver_id
+        if chain is not None:
+            body["chain"] = chain
+        if note is not None:
+            body["note"] = note
+        if chat_id is not None:
+            body["chat_id"] = chat_id
+        return await self._request("POST", "/api/v1/transfers/prepare", api_key, body)
+
+    # -- mandates ("Acting for you") management -- always as yourself, never through act_for --
+
+    async def list_mandates(self, api_key: str, *, role: str | None = None, status: str | None = None) -> dict[str, Any]:
+        """See SaltClient.list_mandates."""
+        params = []
+        if role is not None:
+            params.append(f"role={role}")
+        if status is not None:
+            params.append(f"status={status}")
+        path = "/api/v1/mandates" + (("?" + "&".join(params)) if params else "")
+        return await self._request("GET", path, api_key)
+
+    async def get_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/api/v1/mandates/{mandate_id}", api_key)
+
+    async def propose_mandate(self, api_key: str, params: _JSON) -> dict[str, Any]:
+        """See SaltClient.propose_mandate."""
+        return await self._request("POST", "/api/v1/mandates", api_key, params)
+
+    async def update_mandate(self, api_key: str, mandate_id: str, params: _JSON) -> dict[str, Any]:
+        """See SaltClient.update_mandate."""
+        return await self._request("PATCH", f"/api/v1/mandates/{mandate_id}", api_key, params)
+
+    async def accept_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
+        """See SaltClient.accept_mandate."""
+        return await self._request("POST", f"/api/v1/mandates/{mandate_id}/accept", api_key)
+
+    async def renew_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
+        return await self._request("POST", f"/api/v1/mandates/{mandate_id}/renew", api_key)
+
+    async def pause_mandate(self, api_key: str, mandate_id: str, reason: str | None = None) -> dict[str, Any]:
+        return await self._request("POST", f"/api/v1/mandates/{mandate_id}/pause", api_key, {"reason": reason} if reason else None)
+
+    async def resume_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
+        return await self._request("POST", f"/api/v1/mandates/{mandate_id}/resume", api_key)
+
+    async def revoke_mandate(self, api_key: str, mandate_id: str, reason: str | None = None) -> dict[str, Any]:
+        """See SaltClient.revoke_mandate."""
+        return await self._request("POST", f"/api/v1/mandates/{mandate_id}/revoke", api_key, {"reason": reason} if reason else None)
+
+    async def get_mandate_exercises(
+        self, api_key: str, mandate_id: str, *, before: str | None = None, limit: int | None = None
+    ) -> dict[str, Any]:
+        """See SaltClient.get_mandate_exercises."""
+        params = []
+        if before is not None:
+            params.append(f"before={before}")
+        if limit is not None:
+            params.append(f"limit={limit}")
+        path = f"/api/v1/mandates/{mandate_id}/exercises" + (("?" + "&".join(params)) if params else "")
+        return await self._request("GET", path, api_key)
+
+    async def get_open_mandate_exercises(self, api_key: str) -> dict[str, Any]:
+        return await self._request("GET", "/api/v1/mandates/exercises/open", api_key)
+
+    async def decide_mandate_exercise(self, api_key: str, exercise_id: Any, decision: str, note: str | None = None) -> dict[str, Any]:
+        """See SaltClient.decide_mandate_exercise."""
+        return await self._request("POST", f"/api/v1/mandates/exercises/{exercise_id}/decide", api_key, {"decision": decision, "note": note})
+
+    def act_for(self, principal_id: str, mandate_id: str | None = None) -> "AsyncActingSaltClient":
+        """See SaltClient.act_for -- the async mirror. Not itself a
+        coroutine (nothing to await; it just builds the wrapper), same as
+        SaltClient.act_for."""
+        return AsyncActingSaltClient(self, principal_id, mandate_id)
+
     async def hand_off(self, api_key: str, chat_id: str, to_agent_id: str, reason: str | None = None) -> dict[str, Any]:
         return await self._request("POST", f"/api/v1/chats/{chat_id}/hand_off", api_key, {"to_agent_id": to_agent_id, "reason": reason})
 
@@ -700,3 +982,36 @@ class AsyncSaltClient:
             await self._request("POST", "/api/v1/events", api_key, {"name": name, "properties": properties or {}})
         except Exception:  # noqa: BLE001
             pass
+
+
+class AsyncActingSaltClient(AsyncSaltClient):
+    """Returned by `AsyncSaltClient.act_for(...)`. See `ActingSaltClient`
+    (the sync mirror) for why this is a subclass rather than a wrapper.
+    Do not construct directly -- use `AsyncSaltClient.act_for`."""
+
+    def __init__(self, base: AsyncSaltClient, principal_id: str, mandate_id: str | None = None) -> None:
+        self.host = base.host
+        self._owns_http = False  # never closes the base client's shared session
+        self.http = base.http
+        self._principal_id = principal_id
+        self._mandate_id = mandate_id
+
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        api_key: str,
+        json_body: _JSON | None = None,
+        *,
+        idempotency_key: str | None = None,
+        extra_headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        headers = {ACT_FOR_HEADER: str(self._principal_id)}
+        if self._mandate_id is not None:
+            headers[MANDATE_HEADER] = str(self._mandate_id)
+        if extra_headers:
+            headers.update(extra_headers)
+        if idempotency_key is None and method in ("POST", "PATCH"):
+            idempotency_key = uuid.uuid4().hex
+        return await super()._request(method, path, api_key, json_body, idempotency_key=idempotency_key, extra_headers=headers, timeout=timeout)

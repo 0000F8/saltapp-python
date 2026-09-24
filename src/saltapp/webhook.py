@@ -34,7 +34,21 @@ DELIVERY_ID_HEADER = "X-Salt-Delivery-Id"
 
 DEFAULT_TOLERANCE_SECONDS = 300
 
-EventType = str  # "message" | "card_interaction" | "invoice_paid" | "chat_opened" | "handoff_confirmed" | "handoff_received" | "unknown"
+EventType = str  # "message" | "card_interaction" | "invoice_paid" | "chat_opened" | "handoff_confirmed" | "handoff_received" | "mandate_offered" | "mandate_activated" | "mandate_paused" | "mandate_revoked" | "approval_requested" | "approval_decided" | "unknown"
+
+# Mandates R2 (salt-api's MandateEventJob): same rail as card_interaction/
+# invoice_paid -- a per-recipient plaintext delivery, always carrying an
+# explicit `type`, so these never need shape-sniffing the way `message`
+# does (no `type` at all) or the pre-R2 typed events' body-shape fallbacks
+# below do for an older server.
+_MANDATE_EVENT_TYPES = (
+    "mandate_offered",
+    "mandate_activated",
+    "mandate_paused",
+    "mandate_revoked",
+    "approval_requested",
+    "approval_decided",
+)
 
 
 class WebhookVerificationError(SaltAppError):
@@ -125,6 +139,8 @@ def classify(body: dict[str, Any]) -> EventType:
     event, which carries no `type` at all."""
     explicit = body.get("type")
     if explicit in ("card_interaction", "invoice_paid", "chat_opened", "handoff_confirmed", "handoff_received"):
+        return explicit
+    if explicit in _MANDATE_EVENT_TYPES:
         return explicit
     if isinstance(body.get("message"), dict):
         return "message"

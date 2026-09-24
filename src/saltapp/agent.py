@@ -465,6 +465,64 @@ class InvoicePaidContext(_BaseContext):
         await self.agent.client.send_message(self.agent.identity, self.chat_id, text)
 
 
+class MandateOfferedContext:
+    """A mandate was offered to this agent and is waiting to be accepted.
+    Not a `_BaseContext` subclass -- unlike a chat message, this isn't
+    scoped to one chat and carries no `reply()`/`ask()`. `mandate` is the
+    raw mandate JSON verbatim (see PLAN.md's Mandate JSON shape)."""
+
+    def __init__(self, agent: "Agent", mandate: dict[str, Any]) -> None:
+        self.agent = agent
+        self.mandate = mandate
+
+    async def accept(self) -> dict[str, Any]:
+        """Accepts THIS mandate (`client.accept_mandate`) -- binds this
+        agent's current key fingerprint and moves it to `active`. Call it,
+        or don't: an offer left untouched just stays `proposed` until
+        someone accepts it or the 7-day proposal window lapses."""
+        return await self.agent.client.accept_mandate(self.agent.identity.api_key, self.mandate["id"])
+
+
+class MandateLifecycleContext:
+    """`mandate_activated` / `mandate_paused` / `mandate_revoked` --
+    informational only. `mandate` is the raw mandate JSON verbatim."""
+
+    def __init__(self, agent: "Agent", mandate: dict[str, Any]) -> None:
+        self.agent = agent
+        self.mandate = mandate
+
+
+class ApprovalRequestedContext:
+    """This agent is the PRINCIPAL of an ask-mode call someone acting for
+    it just made, and it's waiting on a decision (e.g. a governance
+    mandate's `money.pay` ask on this agent's own account). `exercise` is
+    the raw exercise JSON verbatim (see PLAN.md's Exercise JSON shape)."""
+
+    def __init__(self, agent: "Agent", exercise: dict[str, Any]) -> None:
+        self.agent = agent
+        self.exercise = exercise
+
+    async def decide(self, decision: str, note: str | None = None) -> dict[str, Any]:
+        """Approve or deny the ask (`client.decide_mandate_exercise`).
+        `decision`: "approve" | "deny". The delegate that made the
+        original call gets an `approval_decided` event once this
+        resolves it one way or the other."""
+        return await self.agent.client.decide_mandate_exercise(
+            self.agent.identity.api_key, self.exercise["id"], decision, note
+        )
+
+
+class ApprovalDecidedContext:
+    """This agent made the original ask-mode call and its exercise was
+    just decided -- informational, so it can resume (or give up on)
+    whatever it was doing. `exercise.decision` is `"approved"` or
+    `"denied"`."""
+
+    def __init__(self, agent: "Agent", exercise: dict[str, Any]) -> None:
+        self.agent = agent
+        self.exercise = exercise
+
+
 Handler = Callable[[Any], Awaitable[None]]
 
 
@@ -529,6 +587,37 @@ class Agent:
         self._handlers["handoff_received"] = fn
         return fn
 
+    def on_mandate_offered(self, fn: Handler) -> Handler:
+        """A mandate was offered to this agent. `ctx`: `MandateOfferedContext`
+        (`.mandate`, `.accept()`). See **Acting for someone** in the README."""
+        self._handlers["mandate_offered"] = fn
+        return fn
+
+    def on_mandate_activated(self, fn: Handler) -> Handler:
+        self._handlers["mandate_activated"] = fn
+        return fn
+
+    def on_mandate_paused(self, fn: Handler) -> Handler:
+        self._handlers["mandate_paused"] = fn
+        return fn
+
+    def on_mandate_revoked(self, fn: Handler) -> Handler:
+        self._handlers["mandate_revoked"] = fn
+        return fn
+
+    def on_approval_requested(self, fn: Handler) -> Handler:
+        """This agent is the PRINCIPAL of an ask-mode call and is waiting
+        on a decision. `ctx`: `ApprovalRequestedContext` (`.exercise`,
+        `.decide(decision, note=None)`)."""
+        self._handlers["approval_requested"] = fn
+        return fn
+
+    def on_approval_decided(self, fn: Handler) -> Handler:
+        """This agent made the original ask-mode call and it was just
+        decided. `ctx`: `ApprovalDecidedContext` (`.exercise`)."""
+        self._handlers["approval_decided"] = fn
+        return fn
+
     # -- setup --
 
     async def ensure_identity(self) -> Identity:
@@ -567,6 +656,14 @@ class Agent:
                 await self._call_simple_handler("handoff_confirmed", event.body)
             elif event.type == "handoff_received":
                 await self._call_simple_handler("handoff_received", event.body)
+            elif event.type == "mandate_offered":
+                await self._handle_mandate_offered(event.body)
+            elif event.type in ("mandate_activated", "mandate_paused", "mandate_revoked"):
+                await self._handle_mandate_lifecycle(event.type, event.body)
+            elif event.type == "approval_requested":
+                await self._handle_approval_requested(event.body)
+            elif event.type == "approval_decided":
+                await self._handle_approval_decided(event.body)
         except Exception as exc:  # noqa: BLE001
             self._logger.error("[dispatch] handling %s failed: %s", event.type, exc)
 
@@ -713,6 +810,34 @@ class Agent:
             is_top_up=bool(body.get("billing_account_id")), transfer_request_id=body.get("transfer_request_id"),
         )
         await handler(ctx)
+
+    async def _handle_mandate_offered(self, body: dict[str, Any]) -> None:
+        handler = self._handlers.get("mandate_offered")
+        mandate = body.get("mandate")
+        if handler is None or not isinstance(mandate, dict):
+            return
+        await handler(MandateOfferedContext(self, mandate))
+
+    async def _handle_mandate_lifecycle(self, event_type: str, body: dict[str, Any]) -> None:
+        handler = self._handlers.get(event_type)
+        mandate = body.get("mandate")
+        if handler is None or not isinstance(mandate, dict):
+            return
+        await handler(MandateLifecycleContext(self, mandate))
+
+    async def _handle_approval_requested(self, body: dict[str, Any]) -> None:
+        handler = self._handlers.get("approval_requested")
+        exercise = body.get("exercise")
+        if handler is None or not isinstance(exercise, dict):
+            return
+        await handler(ApprovalRequestedContext(self, exercise))
+
+    async def _handle_approval_decided(self, body: dict[str, Any]) -> None:
+        handler = self._handlers.get("approval_decided")
+        exercise = body.get("exercise")
+        if handler is None or not isinstance(exercise, dict):
+            return
+        await handler(ApprovalDecidedContext(self, exercise))
 
     # -- webhook mode --
 
