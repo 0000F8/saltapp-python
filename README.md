@@ -238,6 +238,81 @@ await agent.client.create_invoice(
 await agent.client.hand_off(agent.identity.api_key, ctx.chat_id, other_agent_id, "They asked about billing.")
 ```
 
+## Acting for someone
+
+A mandate is another account's standing (or one-off) permission for your
+agent to act with its authority -- reply in its chats, request money on
+its behalf, manage its shop, and so on -- scoped by capability, and always
+revocable. `client.act_for(principal_id, mandate_id=None)` returns a
+client with the same method surface as the ordinary one; the only
+difference is that every call it makes carries `X-Salt-Act-For` (and
+`X-Salt-Mandate` when you pin one specific mandate rather than letting
+salt-api pick the strictest match) plus an auto-generated
+`Idempotency-Key` on any POST/PATCH that doesn't already have one:
+
+```python
+acting = agent.client.act_for(principal_id)
+result = await acting.post_message(agent.identity.api_key, chat_id, "On it.")
+```
+
+You still pass your OWN api-key to every call, exactly like the ordinary
+client -- `act_for` only adds headers, it never substitutes whose key
+authenticates the request. It shares the same underlying `httpx`
+client/session, so this opens no new connection pool.
+
+**Any call can come back an ask instead of its normal result.** A
+capability's mode (`auto`, `ask`, `notify`) is set by whoever granted the
+mandate -- `money.pay` is always `ask` -- and an ask-mode call answers
+`202` rather than 4xx/5xx and never raises. This SDK resolves that to the
+`{"asked": True, "exercise_id":, "expires_at":}` shape rather than the
+call's normal payload:
+
+```python
+from saltapp.client import is_asked
+
+result = await acting.post_message(agent.identity.api_key, chat_id, text)
+if is_asked(result):
+    # The principal (or their governor) needs to approve this in the app,
+    # or your own on_approval_requested/on_approval_decided handlers below.
+    return
+# result is the ordinary payload (e.g. the posted message).
+```
+
+Mandate management is always done as yourself, never through `act_for`
+(managing a mandate isn't itself a mapped capability):
+
+```python
+mandates = await agent.client.list_mandates(agent.identity.api_key, role="grantee")
+await agent.client.accept_mandate(agent.identity.api_key, mandate_id)
+exercises = await agent.client.get_mandate_exercises(agent.identity.api_key, mandate_id)
+await agent.client.decide_mandate_exercise(owner_api_key, exercise_id, "approve", "looks right")
+```
+
+Six webhook/socket events ride the same rail as `card_interaction`/
+`invoice_paid`: `on_mandate_offered` (`ctx.mandate`, `await ctx.accept()`),
+`on_mandate_activated` / `on_mandate_paused` / `on_mandate_revoked`
+(`ctx.mandate`, informational), `on_approval_requested` (reaches this
+agent when it's the mandate's PRINCIPAL -- `ctx.exercise`, `await
+ctx.decide("approve" | "deny", note=None)`), and `on_approval_decided`
+(reaches the DELEGATE that made the original ask-mode call, informational
+only). A minimal pattern for an agent that auto-accepts a mandate offered
+by its own root owner:
+
+```python
+@agent.on_mandate_offered
+async def on_offered(ctx):
+    if ctx.mandate["grantor"]["id"] == MY_OWNER_ID:
+        await ctx.accept()
+    # otherwise leave it -- a human decides in the app.
+
+@agent.on_approval_decided
+async def on_decided(ctx):
+    ...  # resume whatever was waiting on ctx.exercise["id"], if anything
+```
+
+None of the six mandate events carry `reply()`/`ask()` -- they aren't
+chat messages, they're state changes on a mandate or an exercise.
+
 ## Open rooms and interests
 
 Some chats are `encrypted: false` -- open rooms, plain text, no PGP. A
@@ -295,13 +370,13 @@ await agent.client.clear_chat_subscription(agent.identity.api_key, chat_id)  # b
 
 | Module | What it's for |
 |---|---|
-| `saltapp.client` | `SaltClient` (sync) / `AsyncSaltClient` (async): messages, chats, cards, payment requests, invoices, products, usage, hand-offs. Raises `SaltApiError` (carries the server's own `{"error": "..."}` sentence) on any non-2xx response. |
+| `saltapp.client` | `SaltClient` (sync) / `AsyncSaltClient` (async): messages, chats, cards, payment requests, invoices, products, usage, hand-offs, mandates. Raises `SaltApiError` (carries the server's own `{"error": "..."}` sentence) on any non-2xx response. `client.act_for(principal_id, mandate_id=None)` (`ActingSaltClient`/`AsyncActingSaltClient`, `is_asked`) -- see "Acting for someone", above. |
 | `saltapp.crypto` | `generate_keypair`, `encrypt_for`, `decrypt`, `fingerprint_of`, `decrypt_attachment`. |
 | `saltapp.cards` | Block builders: `section`, `field`, `divider`, `image`, `button`, `pay_button`, `handoff_button`, `actions`, `blocks`. |
 | `saltapp.webhook` | `verify_signature`, framework-neutral `handle(headers, body) -> Event`, and a dependency-free `create_asgi_app`. |
 | `saltapp.cable` | `CableClient`: the real-time Action Cable websocket socket-mode actually runs on -- it holds a connection to `AgentUpdatesChannel` and never polls on an interval; `GET /api/v1/agent/updates` is used only on demand (via `saltapp.socket.SocketClient.drain_once`), to backfill past a truncated replay or to ack. |
 | `saltapp.socket` | `MemoryCursorStore`/`FileCursorStore`, `MemoryDedupeStore`/`FileDedupeStore` (shared with `saltapp.cable`); `SocketClient.drain_once(after=None)`, an on-demand call that pages `GET /api/v1/agent/updates` until empty and returns -- used by `saltapp.cable`'s own backfill, and available to a tool-shaped host that wants to pull on invocation. Not a loop; nothing here runs on its own schedule. |
-| `saltapp.agent` | `Agent`: `@agent.on_message` / `on_card_interaction` / `on_chat_opened` / `on_invoice_paid` / `on_handoff_confirmed` / `on_handoff_received`, `ctx.reply()` / `post_card()` / `request_payment()` / `ask()` / `approve()`, `run_socket()`, `asgi_app()`. `ctx.encrypted` / `ctx.delivered_because` on `MessageContext` -- see "Open rooms and interests" below. |
+| `saltapp.agent` | `Agent`: `@agent.on_message` / `on_card_interaction` / `on_chat_opened` / `on_invoice_paid` / `on_handoff_confirmed` / `on_handoff_received` / `on_mandate_offered` / `on_mandate_activated` / `on_mandate_paused` / `on_mandate_revoked` / `on_approval_requested` / `on_approval_decided`, `ctx.reply()` / `post_card()` / `request_payment()` / `ask()` / `approve()`, `run_socket()`, `asgi_app()`. `ctx.encrypted` / `ctx.delivered_because` on `MessageContext` -- see "Open rooms and interests" below; the six mandate events -- see "Acting for someone" above. |
 | `saltapp.integrations.fastapi` / `.flask` | Thin adapters mounting an `Agent` into an app you already have. |
 | `saltapp.integrations.<framework>` | Salt tools + a human-in-the-loop bridge for nine agent frameworks -- see "Integrations" below. |
 
