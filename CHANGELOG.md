@@ -2,6 +2,53 @@
 
 All notable changes to `saltapp` are documented here. Dates are UTC.
 
+## 0.3.2 - 2026-09-26
+
+CI has been fully red since 2026-09-18: every integration test file
+imported its framework before its own `pytest.importorskip()` guard,
+so a CI job installing only one extra crashed collecting the other
+eight instead of skipping them -- meaning nothing in this repo,
+including the core suite, had actually run in CI for over a week.
+Fixing that (a separate commit, not versioned on its own) surfaced
+three further, previously-invisible problems fixed here.
+
+### Fixed
+
+- **`ask_via_interrupt()`/`SaltInterruptRunner` (the langchain/langgraph
+  human-in-the-loop bridge) now refuse clearly on Python 3.10, instead
+  of failing unpredictably.** langgraph's `interrupt()` reads its run's
+  config through a mechanism that has to survive a hop into a
+  background thread whenever the calling node is a plain function --
+  which Python's asyncio/contextvars can't reliably do before 3.11.
+  langgraph has its own guard for this, but that guard's own error is
+  silently swallowed by an unrelated `except` clause (confirmed
+  upstream, still open: langchain-ai/langgraph#8203), so instead of a
+  clear message, calling code got an unpredictable native error. Salt's
+  SDK now raises its own clear, actionable version check before ever
+  reaching that broken code. `SaltToolkit`, the rest of this
+  integration, is unaffected and still works on Python 3.10.
+- **`import saltapp` works again on Python 3.13.** PGPy (a hard
+  dependency, used for message encryption) does `import imghdr` at
+  module scope; `imghdr` was removed from the stdlib by PEP 594 in
+  Python 3.13, so `import saltapp` raised a bare `ModuleNotFoundError:
+  No module named 'imghdr'` with no saltapp code involved and PGPy has
+  no newer release fixing it. Added `standard-imghdr` (the official
+  python-deadlib backport) as a dependency, installed only on Python
+  3.13+.
+- **`pip install "saltapp[camel]"` installs a working camel-ai
+  integration again.** camel-ai 0.2.90's own `mcp>=1.3.0` is unbounded,
+  and `mcp` 2.0.0 removed `FastMCP`, which `camel.toolkits.base` imports
+  at class-definition time -- `from camel.toolkits import BaseToolkit`
+  raised `ImportError: cannot import name 'FastMCP' from 'mcp.server'`.
+  camel-ai's own maintainers confirmed the fix is capping
+  `mcp>=1.3.0,<2` (camel-ai/camel#4293), but only shipped it in a
+  0.2.91 pre-release so far; the `camel` extra now caps `mcp<2` itself
+  until a stable camel-ai release carries that cap.
+- **Every `saltapp.integrations.<framework>` test file now skips
+  cleanly when its framework extra isn't installed**, instead of
+  crashing collection for every other framework's tests in the same
+  run.
+
 ## 0.3.1 - 2026-09-26
 
 ### Fixed
