@@ -15,9 +15,48 @@
 # live in `langgraph.types`; `MemorySaver` was renamed `InMemorySaver`
 # (`langgraph.checkpoint.memory`) -- a graph using `interrupt()` MUST be
 # compiled with a checkpointer or it raises.
+#
+# `ask_via_interrupt()`/`SaltInterruptRunner` need Python 3.11+ (2026-09-26
+# CI investigation): langgraph's `interrupt()` reads the active run's config
+# via `langgraph.config.get_config()`, which is backed by a `ContextVar` that
+# has to survive a hop into a `ThreadPoolExecutor` thread whenever the node
+# calling `interrupt()` is a plain (non-async) function invoked through
+# `graph.ainvoke()` -- exactly the shape `SaltInterruptRunner.arun()` always
+# drives, since it is itself async. `get_config()` KNOWS this hop is
+# unreliable on Python <3.11 and has an explicit version guard meant to
+# raise "Python 3.11 or later required to use this in an async context" --
+# but that guard's own `raise` sits inside a `try: ... except RuntimeError:
+# pass` that was written to swallow a DIFFERENT RuntimeError
+# (`asyncio.current_task()` with no running loop) and silences its own
+# intentional raise instead (confirmed upstream, still open as of 2026-09:
+# https://github.com/langchain-ai/langgraph/issues/8203). The result on
+# Python 3.10 isn't a clean, guaranteed error -- it's whatever the
+# ThreadPoolExecutor's context propagation happens to do that run (observed:
+# reliably fine in isolation, reliably `RuntimeError: Called get_config
+# outside of a runnable context` once enough other async work has run
+# threads through the same process). `_require_py311_for_interrupts()` below
+# raises OUR OWN clear, deterministic version of the error langgraph meant
+# to raise, before ever reaching that broken machinery.
 from __future__ import annotations
 
+import sys
 from typing import Any, Optional
+
+_MIN_PYTHON_FOR_INTERRUPTS = (3, 11)
+
+
+def _require_py311_for_interrupts() -> None:
+    if sys.version_info < _MIN_PYTHON_FOR_INTERRUPTS:
+        raise RuntimeError(
+            "saltapp.integrations.langchain's ask_via_interrupt()/SaltInterruptRunner "
+            "require Python 3.11 or later: langgraph's interrupt() needs its active "
+            "run config to survive a hop into a background thread, which Python <3.11's "
+            "asyncio/contextvars implementation cannot reliably do -- a confirmed, still-open "
+            "upstream langgraph bug (its own version guard for this is silenced by an "
+            "unrelated except clause): https://github.com/langchain-ai/langgraph/issues/8203. "
+            "SaltToolkit (the plain tool-calling half of this integration) is unaffected and "
+            "works fine on Python 3.10."
+        )
 
 try:
     from langchain_core.tools import BaseTool, BaseToolkit, StructuredTool
@@ -122,14 +161,17 @@ class SaltToolkit(BaseToolkit):
 def ask_via_interrupt(question: str, *, options: Optional[list[str]] = None) -> Any:
     """Call from inside a LangGraph node or tool to pause the graph and ask
     a human. Requires the graph to be compiled with a checkpointer (any
-    `interrupt()` call does). Returns whatever value the resuming
-    `Command(resume=...)` carried -- when driven by `SaltInterruptRunner`
-    below, that's the human's answer as plain text.
+    `interrupt()` call does) and Python 3.11+ (see this module's header
+    comment -- a confirmed upstream langgraph limitation on 3.10, not a
+    saltapp one). Returns whatever value the resuming `Command(resume=...)`
+    carried -- when driven by `SaltInterruptRunner` below, that's the
+    human's answer as plain text.
 
         @tool
         def request_approval(action: str) -> str:
             return ask_via_interrupt(f"Approve: {action}?", options=["Yes", "No"])
     """
+    _require_py311_for_interrupts()
     from langgraph.types import interrupt
 
     payload: dict[str, Any] = {"type": "salt_ask", "question": question}
@@ -144,6 +186,11 @@ class SaltInterruptRunner:
     posts the interrupt's question to Salt (as buttons if it carried
     `options`), waits for the human's answer, then resumes the graph with
     `Command(resume=answer)` -- repeating until the graph finishes.
+
+    Requires Python 3.11+ (see this module's header comment). `arun()` is
+    always async, so it always hits the upstream langgraph limitation that
+    makes `interrupt()` unreliable on 3.10 -- there's no sync code path here
+    that would sidestep it.
 
     The graph MUST be compiled with a checkpointer and invoked against a
     stable `thread_id` (LangGraph resumes a paused run by thread, not by
@@ -160,6 +207,10 @@ class SaltInterruptRunner:
         self._tools = SaltTools(agent, chat_id)
 
     async def arun(self, input_: Any, *, thread_id: str, timeout_seconds: float = 120.0) -> Any:
+        # Fail fast and clearly here too, in case a caller's graph pauses via
+        # a bare `langgraph.types.interrupt()` node instead of going through
+        # `ask_via_interrupt()` above -- same underlying limitation either way.
+        _require_py311_for_interrupts()
         from langgraph.types import Command
 
         config = {"configurable": {"thread_id": thread_id}}

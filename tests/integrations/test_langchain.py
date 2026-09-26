@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import pytest
 
@@ -11,6 +12,14 @@ from saltapp.agent import AskTimeout
 from saltapp.integrations.langchain import SaltToolkit, ask_via_interrupt, SaltInterruptRunner
 
 from .conftest import first_action_id, make_agent, recording_card_handler
+
+# ask_via_interrupt()/SaltInterruptRunner require Python 3.11+ -- see
+# saltapp/integrations/langchain.py's header comment and
+# https://github.com/langchain-ai/langgraph/issues/8203. Below Python 3.11
+# the tests assert the SDK's own clear RuntimeError rather than driving the
+# real interrupt/resume flow, which upstream langgraph does not reliably
+# support on that interpreter.
+_PY311_PLUS = sys.version_info >= (3, 11)
 
 
 def test_toolkit_schema_generation():
@@ -73,6 +82,14 @@ async def test_interrupt_runner_resumes_with_tapped_answer(posted):
     agent = make_agent(recording_card_handler("card-3", posted))
     runner = SaltInterruptRunner(graph, agent=agent, chat_id="chat-3")
 
+    if not _PY311_PLUS:
+        # See module header: langgraph's interrupt() is not reliable from an
+        # async run on Python <3.11 (upstream, langgraph#8203), so
+        # SaltInterruptRunner refuses clearly instead of driving it.
+        with pytest.raises(RuntimeError, match="Python 3.11 or later"):
+            await runner.arun({"approved": ""}, thread_id="thread-1")
+        return
+
     task = asyncio.create_task(runner.arun({"approved": ""}, thread_id="thread-1"))
     await asyncio.sleep(0.1)
     action_id = first_action_id(posted)
@@ -80,3 +97,57 @@ async def test_interrupt_runner_resumes_with_tapped_answer(posted):
 
     result = await asyncio.wait_for(task, timeout=3)
     assert result == {"approved": "Yes"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not _PY311_PLUS,
+    reason="ask_via_interrupt requires Python 3.11+ (see langgraph#8203); "
+    "test_interrupt_runner_resumes_with_tapped_answer covers the <3.11 refusal",
+)
+async def test_interrupt_runner_two_node_graph_pauses_and_resumes(posted):
+    """A real, multi-node graph: a node runs before the ask, the ask node
+    pauses and resumes with the human's tapped answer, and a node after it
+    uses that answer -- proves the interrupt/resume bridge in a shape closer
+    to a production graph than the single-node test above."""
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.graph import END, START, StateGraph
+    from typing_extensions import TypedDict
+
+    class State(TypedDict):
+        prepared: bool
+        approved: str
+        finalized: bool
+
+    def prepare(state: State) -> dict:
+        return {"prepared": True}
+
+    def ask(state: State) -> dict:
+        answer = ask_via_interrupt("Approve this?", options=["Yes", "No"])
+        return {"approved": answer}
+
+    def finalize(state: State) -> dict:
+        return {"finalized": state["approved"] == "Yes"}
+
+    builder = StateGraph(State)
+    builder.add_node("prepare", prepare)
+    builder.add_node("ask", ask)
+    builder.add_node("finalize", finalize)
+    builder.add_edge(START, "prepare")
+    builder.add_edge("prepare", "ask")
+    builder.add_edge("ask", "finalize")
+    builder.add_edge("finalize", END)
+    graph = builder.compile(checkpointer=InMemorySaver())
+
+    agent = make_agent(recording_card_handler("card-4", posted))
+    runner = SaltInterruptRunner(graph, agent=agent, chat_id="chat-4")
+
+    task = asyncio.create_task(
+        runner.arun({"prepared": False, "approved": "", "finalized": False}, thread_id="thread-2")
+    )
+    await asyncio.sleep(0.1)
+    action_id = first_action_id(posted)
+    agent._ask_registry.try_resolve_card_interaction("card-4", action_id, {"id": "human-1"}, None)
+
+    result = await asyncio.wait_for(task, timeout=3)
+    assert result == {"prepared": True, "approved": "Yes", "finalized": True}
