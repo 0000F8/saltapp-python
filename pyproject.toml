@@ -33,6 +33,17 @@ dependencies = [
     "httpx>=0.24",
     "PGPy>=0.6.0",
     "cryptography>=41.0",
+    # PGPy 0.6.0 (its last release) does `import imghdr` at module scope
+    # (pgpy/constants.py, used by its own `imghdr.what(None, h=...)` User
+    # Attribute image-type sniff) -- `imghdr` was removed from the stdlib by
+    # PEP 594 in Python 3.13, so `import saltapp` (which imports
+    # saltapp.crypto, which imports pgpy) raised a bare `ModuleNotFoundError`
+    # on 3.13 with no saltapp code involved. `standard-imghdr` is the
+    # official python-deadlib backport (a verbatim copy of the removed
+    # stdlib module, same `what(file, h=None)` signature pgpy calls) --
+    # installing it only on 3.13+ makes `import pgpy` work again without
+    # touching pgpy itself, which has no newer release addressing this.
+    "standard-imghdr; python_version >= '3.13'",
     # Socket mode is push, not poll (2026-09-22): a real Action Cable
     # websocket to salt-api (see saltapp.cable), not an interval poll of
     # GET /api/v1/agent/updates. A hard dependency, same as salt-agent-sdk
