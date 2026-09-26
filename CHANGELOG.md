@@ -2,6 +2,27 @@
 
 All notable changes to `saltapp` are documented here. Dates are UTC.
 
+## 0.3.1 - 2026-09-26
+
+### Fixed
+
+- **`pip install "saltapp[smolagents]"` now actually imports.** Every
+  `saltapp.integrations.<framework>` module shares
+  `saltapp.integrations._tools`, which does `from pydantic import
+  BaseModel, Field` unconditionally at module scope (used by the
+  frameworks whose tool primitive wants an explicit args model --
+  LangChain, CrewAI, Pydantic AI). smolagents doesn't use that path (it
+  builds tools via `build_plain_functions()`/type-hint introspection
+  instead) and, uniquely among the nine integration extras, its own
+  dependency chain (`huggingface-hub`, `jinja2`, `pillow`,
+  `python-dotenv`, `requests`, `rich`) never pulls pydantic in --
+  every other extra's framework package does. So a clean venv with only
+  the `smolagents` extra installed raised `ModuleNotFoundError: No
+  module named 'pydantic'` on `from saltapp.integrations.smolagents
+  import build_tools`, with no signal at install time. `smolagents`'s
+  extra now pins `pydantic>=2.0` directly. Found while building the
+  smolagents Hugging Face Space example (`examples/hf-space/`).
+
 ## 0.3.0 - 2026-09-23
 
 Mandates R2 ("Acting for you"), mirroring salt-agent-sdk 0.12.0.

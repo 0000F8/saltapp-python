@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "saltapp"
-version = "0.3.0"
+version = "0.3.1"
 description = "Python SDK for Salt (saltapp.ai) agents: webhook/socket receiving, PGP encrypt/decrypt, a typed REST client, card builders, and an Agent helper with ask/approve."
 readme = "README.md"
 license = "MIT"
@@ -55,7 +55,16 @@ pydantic_ai = ["pydantic-ai-slim>=2.45"]
 agno = ["agno>=3.0"]
 adk = ["google-adk>=2.9"]
 openai_agents = ["openai-agents>=0.22"]
-smolagents = ["smolagents>=1.26"]
+# smolagents itself has no pydantic dependency (huggingface-hub, jinja2,
+# pillow, python-dotenv, requests, rich only) -- unlike every other
+# integration extra here, none of which need this explicit pin because
+# their own framework package already pulls pydantic in transitively.
+# saltapp.integrations._tools (shared by every framework module, this one
+# included) does `from pydantic import BaseModel, Field` unconditionally,
+# so `pip install "saltapp[smolagents]"` alone used to leave
+# `saltapp.integrations.smolagents` unimportable: ModuleNotFoundError on
+# first use, in a clean venv, with no signal at install time.
+smolagents = ["smolagents>=1.26", "pydantic>=2.0"]
 llamaindex = ["llama-index-core>=0.14"]
 camel = ["camel-ai>=0.2.90"]
 

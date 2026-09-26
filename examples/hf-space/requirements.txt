@@ -1,0 +1,2 @@
+saltapp[smolagents] @ git+https://github.com/0000F8/saltapp-python@main
+gradio>=4.0
