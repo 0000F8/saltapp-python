@@ -197,12 +197,8 @@ def run_live_task(chat_id: str, task: str) -> str:
 # UI
 # ---------------------------------------------------------------------------
 
-CUSTOM_CSS = """
-#salt-header img { height: 40px; width: 40px; }
-"""
-
-with gr.Blocks(title="Salt: ask a human", css=CUSTOM_CSS) as demo:
-    with gr.Row(elem_id="salt-header"):
+with gr.Blocks(title="Salt: ask a human") as demo:
+    with gr.Row():
         gr.Image(
             "thumbnail.png", show_label=False, container=False, height=40, width=40, interactive=False
         )
