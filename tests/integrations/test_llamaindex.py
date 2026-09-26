@@ -4,12 +4,12 @@ import asyncio
 
 import pytest
 
+pytest.importorskip("llama_index.core")
+
 from saltapp.agent import AskTimeout
 from saltapp.integrations.llamaindex import SaltToolSpec
 
 from .conftest import first_action_id, make_agent, recording_card_handler
-
-pytest.importorskip("llama_index.core")
 
 
 def test_tool_spec_schema_generation():

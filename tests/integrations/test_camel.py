@@ -4,12 +4,12 @@ import asyncio
 
 import pytest
 
+pytest.importorskip("camel")
+
 from saltapp.agent import AskTimeout
 from saltapp.integrations.camel import SaltHumanToolkit
 
 from .conftest import make_agent, recording_card_handler
-
-pytest.importorskip("camel")
 
 
 def test_toolkit_exposes_human_toolkit_compatible_names_plus_the_rest():

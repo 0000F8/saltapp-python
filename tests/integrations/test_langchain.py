@@ -4,13 +4,13 @@ import asyncio
 
 import pytest
 
+pytest.importorskip("langchain_core")
+pytest.importorskip("langgraph")
+
 from saltapp.agent import AskTimeout
 from saltapp.integrations.langchain import SaltToolkit, ask_via_interrupt, SaltInterruptRunner
 
 from .conftest import first_action_id, make_agent, recording_card_handler
-
-pytest.importorskip("langchain_core")
-pytest.importorskip("langgraph")
 
 
 def test_toolkit_schema_generation():

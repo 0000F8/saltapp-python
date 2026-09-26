@@ -4,12 +4,12 @@ import asyncio
 
 import pytest
 
+pydantic_ai = pytest.importorskip("pydantic_ai")
+
 from saltapp.agent import AskTimeout
 from saltapp.integrations.pydantic_ai import build_toolset, resolve_deferred_approvals
 
 from .conftest import first_action_id, make_agent, recording_card_handler
-
-pydantic_ai = pytest.importorskip("pydantic_ai")
 
 
 def test_toolset_exposes_all_six_tools():

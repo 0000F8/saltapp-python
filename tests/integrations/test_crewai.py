@@ -4,12 +4,12 @@ import asyncio
 
 import pytest
 
+pytest.importorskip("crewai")
+
 from saltapp.agent import AskTimeout
 from saltapp.integrations.crewai import SaltAskHumanTool, SaltHumanInputProvider, salt_tools
 
 from .conftest import first_action_id, make_agent, recording_card_handler
-
-pytest.importorskip("crewai")
 
 
 def test_salt_tools_schema_generation():

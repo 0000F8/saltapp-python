@@ -4,12 +4,12 @@ import asyncio
 
 import pytest
 
+pytest.importorskip("smolagents")
+
 from saltapp.agent import AskTimeout
 from saltapp.integrations.smolagents import build_tools
 
 from .conftest import make_agent, recording_card_handler
-
-pytest.importorskip("smolagents")
 
 
 def test_build_tools_schema_generation():

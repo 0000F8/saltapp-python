@@ -4,12 +4,12 @@ import asyncio
 
 import pytest
 
+pytest.importorskip("agno")
+
 from saltapp.agent import AskTimeout
 from saltapp.integrations.agno import SaltToolkit, resolve_agno_run
 
 from .conftest import first_action_id, make_agent, recording_card_handler
-
-pytest.importorskip("agno")
 
 
 def test_toolkit_schema_and_confirmation_gating():

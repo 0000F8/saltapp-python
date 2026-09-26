@@ -4,12 +4,12 @@ import asyncio
 
 import pytest
 
+pytest.importorskip("google.adk")
+
 from saltapp.agent import AskTimeout
 from saltapp.integrations.adk import build_confirmation_response, build_tools, resolve_confirmation_via_salt
 
 from .conftest import first_action_id, make_agent, recording_card_handler
-
-pytest.importorskip("google.adk")
 
 
 def test_build_tools_schema_and_confirmation_gating():

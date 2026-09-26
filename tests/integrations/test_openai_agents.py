@@ -4,12 +4,12 @@ import asyncio
 
 import pytest
 
+pytest.importorskip("agents")
+
 from saltapp.agent import AskTimeout
 from saltapp.integrations.openai_agents import build_tools, resolve_interruptions
 
 from .conftest import make_agent, recording_card_handler
-
-pytest.importorskip("agents")
 
 
 def test_build_tools_schema_and_approval_gating():
