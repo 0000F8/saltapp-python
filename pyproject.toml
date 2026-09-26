@@ -77,7 +77,18 @@ openai_agents = ["openai-agents>=0.22"]
 # first use, in a clean venv, with no signal at install time.
 smolagents = ["smolagents>=1.26", "pydantic>=2.0"]
 llamaindex = ["llama-index-core>=0.14"]
-camel = ["camel-ai>=0.2.90"]
+# camel-ai 0.2.90 (our floor, and PyPI's latest stable as of 2026-09-26)
+# depends on an unbounded `mcp>=1.3.0`; `mcp` 2.0.0 removed FastMCP, which
+# `camel.toolkits.base` imports at class-definition time
+# (`from mcp.server import FastMCP`), so `pip install "saltapp[camel]"`
+# alone resolved a broken `camel.toolkits` import. camel-ai's own
+# maintainers confirmed the fix is capping `mcp>=1.3.0,<2`
+# (camel-ai/camel#4293, landed via camel-ai/camel#4313) -- but only in the
+# 0.2.91a7 PRE-release so far, not yet in a stable PyPI version. Capping
+# `mcp<2` here directly, rather than waiting on that release, restores a
+# working install today; drop this line once a stable camel-ai carries the
+# cap itself.
+camel = ["camel-ai>=0.2.90", "mcp<2"]
 
 [dependency-groups]
 dev = [
