@@ -41,6 +41,18 @@ def _parse_error_body(response: httpx.Response) -> Any:
         return response.text
 
 
+def _parse_retry_after(response: httpx.Response) -> int | None:
+    """Rack::Attack always sends `Retry-After` as a plain integer number of
+    seconds -- see SaltApiError.retry_after."""
+    raw = response.headers.get("Retry-After")
+    if raw is None:
+        return None
+    try:
+        return int(raw.strip())
+    except ValueError:
+        return None
+
+
 def _maybe_asked(status_code: int, data: Any) -> Any:
     """A mandate-governed call in "ask" mode never 4xx/5xxs and never
     raises -- salt-api answers 202 `{"status": "asked", "exercise_id":,
@@ -117,7 +129,7 @@ class SaltClient:
             headers["Idempotency-Key"] = idempotency_key
         response = self.http.request(method, url, json=json_body, headers=headers, timeout=timeout)
         if response.status_code >= 400:
-            raise SaltApiError(method, url, response.status_code, _parse_error_body(response))
+            raise SaltApiError(method, url, response.status_code, _parse_error_body(response), retry_after=_parse_retry_after(response))
         if response.status_code == 204 or not response.content:
             return None
         return _maybe_asked(response.status_code, response.json())
@@ -320,6 +332,33 @@ class SaltClient:
 
     def update_card(self, api_key: str, card_id: str, blocks: list[dict[str, Any]]) -> dict[str, Any]:
         return self._request("PATCH", f"/api/v1/cards/{card_id}", api_key, {"blocks": blocks})
+
+    def get_card(self, api_key: str, card_id: str, *, after: str | None = None) -> dict[str, Any]:
+        """`GET /api/v1/cards/:id` -- a card's OWNER polling its own tap
+        history instead of the agent's socket-mode outbox, which has
+        exactly one forward-only cursor per agent: two concurrent pollers
+        (or one running beside a socket listener) can otherwise silently
+        consume each other's answers. Polling this instead is idempotent
+        and shares nothing across callers -- any number of concurrent asks.
+
+        Owner-only: `api_key` must belong to the card's owner or this
+        raises `SaltApiError` with status 404 -- byte-identical to an
+        unknown `card_id`, never 403, since a chat member already sees the
+        card in the chat and gets nothing new from this endpoint.
+
+        Returns `{id, state, owner_id, interactions}`; `interactions` is
+        newest-first, capped at 50, each `{id, user_id, action_id, value,
+        created_at}` plus -- only for a tap that created a real payment
+        request -- `transfer_request_id`/`transfer_request_status` (the
+        status is read live, not a snapshot from tap time).
+
+        `after` is either another interaction's id or an ISO 8601
+        timestamp and returns only newer rows; an unrecognised value fails
+        OPEN (the full list comes back, still 200) rather than raising."""
+        path = f"/api/v1/cards/{card_id}"
+        if after is not None:
+            path += f"?after={after}"
+        return self._request("GET", path, api_key)
 
     # -- money: payment requests, invoices, products, usage --
 
@@ -648,7 +687,7 @@ class AsyncSaltClient:
             headers["Idempotency-Key"] = idempotency_key
         response = await self.http.request(method, url, json=json_body, headers=headers, timeout=timeout)
         if response.status_code >= 400:
-            raise SaltApiError(method, url, response.status_code, _parse_error_body(response))
+            raise SaltApiError(method, url, response.status_code, _parse_error_body(response), retry_after=_parse_retry_after(response))
         if response.status_code == 204 or not response.content:
             return None
         return _maybe_asked(response.status_code, response.json())
@@ -799,6 +838,13 @@ class AsyncSaltClient:
 
     async def update_card(self, api_key: str, card_id: str, blocks: list[dict[str, Any]]) -> dict[str, Any]:
         return await self._request("PATCH", f"/api/v1/cards/{card_id}", api_key, {"blocks": blocks})
+
+    async def get_card(self, api_key: str, card_id: str, *, after: str | None = None) -> dict[str, Any]:
+        """See SaltClient.get_card."""
+        path = f"/api/v1/cards/{card_id}"
+        if after is not None:
+            path += f"?after={after}"
+        return await self._request("GET", path, api_key)
 
     async def request_payment(
         self,

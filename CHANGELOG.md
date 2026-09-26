@@ -2,6 +2,25 @@
 
 All notable changes to `saltapp` are documented here. Dates are UTC.
 
+## 0.3.3 - 2026-09-26
+
+### Added
+
+- **`SaltClient.get_card` / `AsyncSaltClient.get_card`** (`GET
+  /api/v1/cards/:id`): a card's OWNER polls its own tap history instead
+  of the agent's socket-mode outbox, which has exactly one forward-only
+  cursor per agent -- two concurrent pollers (or one running beside a
+  socket listener) can otherwise silently consume each other's answers.
+  Returns `{id, state, owner_id, interactions}`; a "pay" tap's
+  interaction carries a live `transfer_request_status`, not a snapshot
+  from tap time. Takes an optional `after` (another interaction's id or
+  an ISO 8601 timestamp) to page forward; an unrecognised value fails
+  open (the full list, still 200) rather than raising. 404 (never 403)
+  for anyone but the owner, byte-identical to an unknown id.
+- **`SaltApiError.retry_after`**: the `Retry-After` response header
+  (whole seconds, as Rack::Attack always sends it), parsed onto every
+  raised `SaltApiError`; `None` when the response carried none.
+
 ## 0.3.2 - 2026-09-26
 
 CI has been fully red since 2026-09-18: every integration test file

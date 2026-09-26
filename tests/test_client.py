@@ -107,6 +107,45 @@ def test_post_card_and_update_card_shapes():
     assert calls[1] == ("PATCH", f"{HOST}/api/v1/cards/card1", {"blocks": [{"type": "divider"}]})
 
 
+def test_get_card_default_has_no_after_query_param():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return json_response(200, {
+            "id": "card1", "state": {"blocks": []}, "owner_id": "agent1", "interactions": [],
+        })
+
+    client = make_sync_client(handler)
+    result = client.get_card("key", "card1")
+
+    assert captured["url"] == f"{HOST}/api/v1/cards/card1"
+    assert result == {"id": "card1", "state": {"blocks": []}, "owner_id": "agent1", "interactions": []}
+
+
+def test_get_card_threads_after_as_a_query_param():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return json_response(200, {"id": "card1", "state": {}, "owner_id": "agent1", "interactions": []})
+
+    client = make_sync_client(handler)
+    client.get_card("key", "card1", after="int-1")
+    assert "after=int-1" in captured["url"]
+
+
+def test_get_card_owner_only_404_raises_with_no_retry_after():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return json_response(404, {"error": "Not found"})
+
+    client = make_sync_client(handler)
+    with pytest.raises(SaltApiError) as excinfo:
+        client.get_card("key", "card1")
+    assert excinfo.value.status == 404
+    assert excinfo.value.retry_after is None
+
+
 def test_error_response_raises_salt_api_error_with_server_sentence():
     def handler(request: httpx.Request) -> httpx.Response:
         return json_response(422, {"error": "You can't request funds from yourself."})
@@ -116,6 +155,29 @@ def test_error_response_raises_salt_api_error_with_server_sentence():
         client.request_payment("key", chat_id="c1", receiver_id="u1", wallet_id="w1", amount="1")
     assert "You can't request funds from yourself." in str(excinfo.value)
     assert excinfo.value.status == 422
+    assert excinfo.value.retry_after is None
+
+
+def test_error_response_with_retry_after_header_is_parsed():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": "The Commons is busy. Try again in a minute."},
+                               headers={"Retry-After": "30"})
+
+    client = make_sync_client(handler)
+    with pytest.raises(SaltApiError) as excinfo:
+        client.get_card("key", "card1")
+    assert excinfo.value.status == 429
+    assert excinfo.value.retry_after == 30
+
+
+def test_error_response_with_unparseable_retry_after_is_none():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"error": "throttled"}, headers={"Retry-After": "not-a-number"})
+
+    client = make_sync_client(handler)
+    with pytest.raises(SaltApiError) as excinfo:
+        client.get_card("key", "card1")
+    assert excinfo.value.retry_after is None
 
 
 def test_get_chat_members_reads_session_users():
@@ -288,6 +350,24 @@ async def test_async_post_plain_message_and_anonymous_get_chat():
     assert captured["post_body"] == {"chat_id": "c1", "message": "hi everyone", "encrypted": False}
     assert captured["post_headers"]["api-key"] == "agent-key"
     assert "api-key" not in captured["get_headers"]
+
+
+@pytest.mark.asyncio
+async def test_async_get_card_default_and_after_param():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return json_response(200, {"id": "card1", "state": {}, "owner_id": "agent1", "interactions": []})
+
+    client = make_async_client(handler)
+    result = await client.get_card("key", "card1")
+    assert captured["url"] == f"{HOST}/api/v1/cards/card1"
+    assert result["id"] == "card1"
+
+    await client.get_card("key", "card1", after="2026-09-26T00:00:00Z")
+    assert "after=2026-09-26T00:00:00Z" in captured["url"]
+    await client.aclose()
 
 
 def test_get_agent_updates_query_params():

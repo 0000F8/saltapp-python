@@ -12,9 +12,16 @@ class SaltApiError(Exception):
 
     `body` is whatever the server returned -- usually `{"error": "..."}`,
     sometimes `{"errors": [...]}` (Rails validation errors) or plain text.
+    `retry_after` is Rack::Attack's `Retry-After` response header (seconds),
+    parsed when present -- e.g. the 429 a card poller can get back from
+    `commons_reads`/`commons_posts` or any other throttle. `None` when the
+    response carried no such header or its value wasn't a plain integer
+    (Rack::Attack always sends whole seconds; an HTTP-date form is not
+    handled here, unlike salt-agent-sdk's socket reconnect parser, since
+    Salt itself never sends one).
     """
 
-    def __init__(self, method: str, url: str, status: int, body: Any) -> None:
+    def __init__(self, method: str, url: str, status: int, body: Any, retry_after: int | None = None) -> None:
         reason = ""
         if isinstance(body, dict):
             err = body.get("error")
@@ -27,6 +34,7 @@ class SaltApiError(Exception):
         self.url = url
         self.status = status
         self.body = body
+        self.retry_after = retry_after
 
 
 class SaltAppError(Exception):
