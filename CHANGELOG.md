@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.4
+
+**`ctx.ask()` with buttons could never receive an answer.** `_BaseContext.ask()` computed the card
+id as `card.get("id") or card.get("card_id")`, but `POST /api/v1/cards` answers with the card's chat
+bubble, which carries `message_id` and `resource_id` and neither of those keys — so the id was the
+literal string `"None"` and every `ask()`/`approve()` offering buttons registered a waiter that no
+real tap could ever match. It timed out silently, in production, through all nine framework
+integrations built on `SaltTools` (LangChain, CrewAI, LlamaIndex, OpenAI Agents, Agno, ADK,
+smolagents, pydantic-ai, camel-ai). Five test fakes answered with `{"id": card_id}` — the exact
+shape the bug expected — which is why the suite was green. Now reads `resource_id` with a
+`resource.id` fallback and raises if neither is present rather than degrading to a string that
+cannot match; all five fakes corrected to the real envelope. `AGENTS.md` records the rule: generate
+fakes from the API's real render, which since salt-api 0.98.3 is published as byte-real examples in
+`https://saltapp.ai/api/openapi.json`.
+
 All notable changes to `saltapp` are documented here. Dates are UTC.
 
 ## 0.3.3 - 2026-09-26
