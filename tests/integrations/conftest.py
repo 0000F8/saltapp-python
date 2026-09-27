@@ -28,14 +28,34 @@ def make_agent(handler: Callable[[httpx.Request], httpx.Response]) -> Agent:
 
 
 def recording_card_handler(card_id: str, posted: list) -> Callable[[httpx.Request], httpx.Response]:
-    """Answers every request with `{"id": card_id}` and records each
-    request's JSON body -- used to both satisfy `post_card`/messages calls
-    and pull out the real (randomly-suffixed) action_id an `ask_human` call
-    generated, the same way tests/test_ask.py does for `ctx.ask()` directly."""
+    """Answers every request and records each request's JSON body -- used
+    to both satisfy `post_card`/messages calls and pull out the real
+    (randomly-suffixed) action_id an `ask_human` call generated, the same
+    way tests/test_ask.py does for `ctx.ask()` directly.
+
+    The card-shaped response mirrors the REAL POST /api/v1/cards response
+    (salt-api `cards_controller#create` renders the card's chat BUBBLE via
+    `Message#formatted_message` -- see openapi.json's `Message` schema,
+    `Card#as_chat_resource`): there is no top-level `id` or `card_id`, only
+    `resource_id` (mirrored at `resource.id`). This used to answer with
+    the bare `{"id": card_id}` a hand-written guess would produce, which
+    is exactly the shape `saltapp.agent._BaseContext.ask()` used to
+    assume -- the fake and the bug matched each other and hid this across
+    every framework integration test that used it."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         posted.append(json.loads(request.content) if request.content else {})
-        return httpx.Response(200, json={"id": card_id})
+        return httpx.Response(
+            200,
+            json={
+                "chat_id": "chat-1",
+                "message": "📇 shared a card",
+                "message_id": "msg-1",
+                "resource_type": "Card",
+                "resource_id": card_id,
+                "resource": {"id": card_id, "card_type": "blocks", "state": {"blocks": []}},
+            },
+        )
 
     return handler
 

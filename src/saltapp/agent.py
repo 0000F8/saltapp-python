@@ -297,7 +297,20 @@ class _BaseContext:
             blocks.append(cards_module.actions(buttons))
 
         card = await self.post_card(blocks, question)
-        card_id = str(card.get("id") or card.get("card_id"))
+        # POST /api/v1/cards answers the card's chat BUBBLE
+        # (Message#formatted_message), not the bare card -- there is no
+        # top-level `id` or `card_id` (see openapi.json's Message schema,
+        # cards_controller#create, Card#as_chat_resource). The card's own
+        # id rides at `resource_id`, with `resource.id` as a fallback --
+        # mirrors saltapp-agentkit's Python provider
+        # (salt_action_provider.py) and salt-mcp's keyless-tools.mjs.
+        # `str(card.get("id") or card.get("card_id"))` used to silently
+        # become the literal string "None" against the real response, so
+        # this ask registered a waiter no card_interaction could ever
+        # match and just timed out.
+        card_id = card.get("resource_id") or (card.get("resource") or {}).get("id")
+        if not card_id:
+            raise RuntimeError("Salt didn't return this card's id -- can't correlate an answer to it.")
 
         card_waiter = self.agent._ask_registry.register_card(card_id, answerer_id) if options else None
         text_waiter = self.agent._ask_registry.register_free_text(self.chat_id, answerer_id) if free_text else None
