@@ -26,11 +26,38 @@ def make_recording_card_handler(card_id: str, posted: list) -> object:
     """A mock transport handler for POST /api/v1/cards that both answers
     with `card_id` and records the real `blocks` the agent posted, so a
     test can pull out the actual (randomly-suffixed) action_id ask()
-    generated instead of guessing it."""
+    generated instead of guessing it.
+
+    Shaped like the REAL response, not a convenient guess: salt-api's
+    `cards_controller#create` renders the card's chat BUBBLE via
+    `Message#formatted_message` (see openapi.json's `Message` schema,
+    `Card#as_chat_resource`) -- there is no top-level `id` or `card_id`.
+    The card's own id rides at `resource_id` (mirrored at `resource.id`).
+    An earlier version of this fixture answered with the bare `{"id":
+    card_id}` a hand-written guess would produce, which is exactly the
+    shape `_BaseContext.ask()` used to assume -- the fake and the bug
+    matched each other and hid this for every test that used it."""
 
     def handler(request: httpx.Request) -> httpx.Response:
         posted.append(json.loads(request.content))
-        return httpx.Response(200, json={"id": card_id})
+        return httpx.Response(
+            200,
+            json={
+                "chat_id": "chat-1",
+                "message": "📇 shared a card",
+                "message_id": "msg-1",
+                "seq": 1,
+                "message_type": "Card",
+                "version": 1,
+                "event_type": None,
+                "user": {"id": "agent-1", "username": "agent", "display_name": "Agent", "account_type": "Agent"},
+                "created_at": "2026-09-27T00:00:00Z",
+                "resource_type": "Card",
+                "resource_id": card_id,
+                "resource": {"id": card_id, "card_type": "blocks", "state": {"blocks": []}},
+                "reactions": [],
+            },
+        )
 
     return handler
 
@@ -76,7 +103,7 @@ async def test_ask_resolves_by_button_tap():
 @pytest.mark.asyncio
 async def test_ask_resolves_by_typed_reply():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"id": "card-2"})
+        return httpx.Response(200, json={"resource_type": "Card", "resource_id": "card-2", "resource": {"id": "card-2"}})
 
     agent = make_agent(handler)
     ctx = make_ctx(agent, chat_id="chat-2")
@@ -95,7 +122,7 @@ async def test_ask_resolves_by_typed_reply():
 @pytest.mark.asyncio
 async def test_ask_free_text_ignores_wrong_sender_when_scoped():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"id": "card-3"})
+        return httpx.Response(200, json={"resource_type": "Card", "resource_id": "card-3", "resource": {"id": "card-3"}})
 
     agent = make_agent(handler)
     ctx = make_ctx(agent, chat_id="chat-3")
@@ -114,7 +141,7 @@ async def test_ask_free_text_ignores_wrong_sender_when_scoped():
 @pytest.mark.asyncio
 async def test_ask_times_out_with_no_answer():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"id": "card-4"})
+        return httpx.Response(200, json={"resource_type": "Card", "resource_id": "card-4", "resource": {"id": "card-4"}})
 
     agent = make_agent(handler)
     ctx = make_ctx(agent, chat_id="chat-4")
@@ -147,7 +174,7 @@ async def test_approve_true_on_yes_button():
 @pytest.mark.asyncio
 async def test_approve_false_on_typed_no():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"id": "card-6"})
+        return httpx.Response(200, json={"resource_type": "Card", "resource_id": "card-6", "resource": {"id": "card-6"}})
 
     agent = make_agent(handler)
     ctx = make_ctx(agent, chat_id="chat-6")
