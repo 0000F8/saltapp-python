@@ -4,8 +4,9 @@ Notes for an agent (human or AI) working on this repo next.
 
 ## What this is
 
-`saltapp` is the Python SDK for [Salt](https://saltapp.ai) agents. It is
-the Python counterpart to
+[Salt](https://saltapp.ai) is an end-to-end encrypted chat where humans and
+AI agents are equal contacts. `saltapp` is the Python SDK for Salt agents.
+It is the Python counterpart to
 [`salt-agent-sdk`](https://github.com/0000F8/salt-agent-sdk) (TypeScript,
 sibling repo at `../salt-agent-sdk` in the workspace) and reuses the proven
 pieces of `../salt-call-agent-example` (a private Python reference agent):
@@ -17,6 +18,21 @@ Read `/Users/z1ggy/projects/salt/CLAUDE.md`'s "salt-api (Rails backend)"
 section for the server-side ground truth this SDK talks to -- especially
 the Agents, Webhook delivery, and Card protocol paragraphs. This file
 assumes you've read that.
+
+**Not yet published**: `saltapp` is not on PyPI today. `pip install saltapp`
+against the real registry does not work -- install from source (see
+"Testing" below) until a release is actually pushed.
+
+## Where the truth is
+
+- `https://saltapp.ai/api/openapi.json` -- the server's own OpenAPI schema.
+- `https://saltapp.ai/agents.md` -- the agent-facing platform doc served by
+  salt-api itself.
+- `https://mcp.saltapp.ai/mcp` -- the hosted remote MCP server (a second,
+  server-authored surface over the same platform; not built by this repo).
+- `/Users/z1ggy/projects/salt/salt-mcp/docs/CLIENTS.md` -- the sibling
+  `salt-mcp` repo's notes for clients calling into MCP, worth cross-checking
+  against anything this SDK does over REST/cable for the same capability.
 
 ## Module map
 
@@ -34,6 +50,62 @@ assumes you've read that.
 | `saltapp.integrations.fastapi` / `.flask` | New | Thin adapters mounting `Agent` into an app you already have. |
 | `saltapp.integrations._tools` | New | `SaltTools`: the six shared actions (`send_message`/`ask_human`/`request_payment`/`send_invoice`/`post_card`/`get_payment_status`) every framework integration below wraps -- one place the business logic and the `ask_human` HITL primitive live. |
 | `saltapp.integrations.{langchain,crewai,pydantic_ai,agno,adk,openai_agents,smolagents,llamaindex,camel}` | New | Nine framework integrations, each a thin shell over `_tools.SaltTools` -- see "Framework integrations" below. |
+
+## Rules that bite
+
+Cross-repo facts that have already cost someone a debugging session in a
+sibling Salt SDK/adapter -- check these before touching `saltapp.agent`,
+`saltapp.client`, or a test fake for either.
+
+- **Poll a card's own history for an answer, never the agent outbox.** A
+  tool waiting on a human's answer to a card must use
+  `SaltClient.get_card`/`AsyncSaltClient.get_card` (`GET
+  /api/v1/cards/:id`) -- never `saltapp.socket.SocketClient.drain_once()`
+  or the cable's on-demand backfill (`GET /api/v1/agent/updates`). That
+  outbox has exactly ONE forward-only cursor per agent; any `after=` on it
+  permanently advances the agent's server-side ack, silently cutting off
+  another consumer's (or the agent's own socket/cable listener's) backlog.
+  `get_card` is idempotent and per-caller, so any number of concurrent
+  polls are safe.
+- **`POST /api/v1/cards` responds with the chat MESSAGE it created, not
+  the card.** The id you get back is under `message_id` (the message) and
+  `resource_id` (the card's real id) -- salt-api's `Message#formatted_message`
+  has no top-level `id` key at all. **`saltapp.agent._BaseContext.ask()`
+  (`src/saltapp/agent.py`) gets this wrong today**: `card = await
+  self.post_card(...); card_id = str(card.get("id") or
+  card.get("card_id"))` -- neither key exists on the real response, so
+  `card_id` becomes the literal string `"None"` and tap-correlation for
+  `ctx.ask()`/`ctx.approve()` cannot work against a live salt-api.
+  `tests/test_ask.py`'s `make_recording_card_handler` fakes the response as
+  `{"id": card_id}`, which is why the suite doesn't catch it -- see the
+  next point. Read `resource_id` when correlating a posted card with its
+  later interactions.
+- **Test fakes must model salt-api's ACTUAL controller response shape, not
+  what the calling code assumes it returns.** This exact bug -- a fake
+  returning `{"id": ...}` for an endpoint whose real response carries
+  `message_id`/`resource_id` instead -- has shipped identically in several
+  downstream Salt SDKs/adapters, including, right now, this repo's own
+  `tests/test_ask.py` (previous point). When writing a fake/mock response
+  for a new endpoint, copy the real controller's `render json:` shape from
+  the `salt-api` source (or a real recorded response), not the client code
+  under test.
+- **A chat's `encrypted` flag lives nested under `session`, not
+  top-level.** `chat["session"]["encrypted"]`, the same place
+  `SaltClient.get_chat_members()` already reads `session.users` from. This
+  is a different field from the per-message `encrypted` that
+  `Agent._handle_message` reads today (`message.get("encrypted", True)`,
+  correctly top-level on each message row, mirrored from the chat's own
+  setting) -- don't confuse the two if you ever need the CHAT's own flag
+  (e.g. before posting a chat's very first message) rather than one
+  already-delivered message's.
+- **Since salt-api 0.98.1, an encrypted chat refuses a non-PGP-armored
+  message body** (422, `messages_controller.rb`'s `pgp_armored?` check;
+  exempted only for the synthetic canary accounts). `SaltClient.post_message`/
+  `send_message` already only ever send armored ciphertext, and
+  `post_plain_message` already sends `encrypted: false` explicitly for open
+  rooms -- but a new call site that posts a raw string must go through
+  `saltapp.crypto.encrypt()` or `post_plain_message`, never a bare
+  `post_message` call with unencrypted text.
 
 ## Deliberate scope decisions (read this before "fixing" a gap)
 
