@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.5
+
+**A refused cable handshake now says why.** `CableClient` logged only "[cable] reconnecting in 0.8s" when the server refused the websocket; it now logs `[cable] handshake failed: HTTP <status> (<reason>)` at warning level first. The refusal a stranger hit (production answered 404 to any handshake without an `Origin` header) is fixed server-side in salt-api 0.117.0, so no `Origin` is needed. A new test pins that a handler waiting on a later frame cannot stall pings or the answer.
+
 ## 0.3.4
 
 **`ctx.ask()` with buttons could never receive an answer.** `_BaseContext.ask()` computed the card
