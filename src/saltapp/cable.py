@@ -138,10 +138,29 @@ class CableHandshakeRejected(Exception):
     ordinary reconnect backoff for this one wait, same as everywhere else
     in this SDK that honours Retry-After."""
 
-    def __init__(self, status_code: int, retry_after_seconds: float | None = None) -> None:
-        super().__init__(f"cable handshake rejected: HTTP {status_code}")
+    def __init__(self, status_code: int, retry_after_seconds: float | None = None, reason: str | None = None) -> None:
+        super().__init__(f"cable handshake rejected: HTTP {status_code}" + (f" ({reason})" if reason else ""))
         self.status_code = status_code
         self.retry_after_seconds = retry_after_seconds
+        # One line of why, when the server said: the response's reason
+        # phrase and/or the first line of its (short) body.
+        self.reason = reason
+
+
+def _handshake_reason(response: Any) -> str | None:
+    """One plain line from a refused handshake's HTTP response: the reason
+    phrase plus the first line of the body (capped), whichever exist."""
+    parts: list[str] = []
+    phrase = getattr(response, "reason_phrase", None)
+    if phrase:
+        parts.append(str(phrase))
+    body = getattr(response, "body", None)
+    if body:
+        text = body.decode("utf-8", "replace") if isinstance(body, (bytes, bytearray)) else str(body)
+        first = text.strip().splitlines()[0][:200] if text.strip() else ""
+        if first and first not in parts:
+            parts.append(first)
+    return ": ".join(parts) or None
 
 
 def _parse_retry_after(value: str | None) -> float | None:
@@ -200,7 +219,7 @@ class _WebsocketsConnector:
         except InvalidStatus as exc:
             status = exc.response.status_code
             retry_after = _parse_retry_after(exc.response.headers.get("Retry-After"))
-            raise CableHandshakeRejected(status, retry_after) from exc
+            raise CableHandshakeRejected(status, retry_after, _handshake_reason(exc.response)) from exc
 
     async def __aexit__(self, *exc_info: object) -> Any:
         if self._cm is not None:
@@ -448,7 +467,7 @@ class CableClient:
         try:
             connection = self._connector(url, headers)
         except CableHandshakeRejected as exc:
-            self._logger.error("[cable] handshake failed: HTTP %s", exc.status_code)
+            self._logger.warning("[cable] handshake failed: HTTP %s", exc.status_code)
             return exc.retry_after_seconds, False
 
         try:
@@ -512,6 +531,10 @@ class CableClient:
                     if caught_up:
                         self._schedule_ack()
         except CableHandshakeRejected as exc:
+            # Say WHY before the reconnect line: a bare "reconnecting in 0.8s"
+            # reads as an outage when the server simply refused the handshake
+            # (a 404 for a missing Origin, a 429 from the rate limiter, ...).
+            self._logger.warning("[cable] handshake failed: HTTP %s%s", exc.status_code, f" ({exc.reason})" if exc.reason else "")
             return exc.retry_after_seconds, subscribed
         except Exception as exc:  # noqa: BLE001 -- any transport error; reconnect
             self._logger.error("[cable] connection error: %s", exc)

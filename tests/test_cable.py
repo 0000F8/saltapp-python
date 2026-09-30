@@ -423,3 +423,109 @@ async def test_local_cursor_is_sent_as_after_on_a_resumed_subscribe():
     await asyncio.wait_for(run_task, timeout=2)
 
     assert seen_identifiers == [{"channel": "AgentUpdatesChannel", "after": 7}]
+
+
+# -- handshake refusal is explained, not just retried -------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_refused_handshake_logs_its_status_and_reason_before_the_reconnect_line(caplog):
+    import logging
+
+    rejected = CableHandshakeRejected(404, reason="Not Found: missing origin")
+    connector = FakeConnector(on_connect=None, reject=rejected)
+    cable = make_cable(no_http_calls_handler, connector, min_backoff=0.01, max_backoff=0.02)
+
+    stop = asyncio.Event()
+    with caplog.at_level(logging.INFO, logger="saltapp.cable"):
+        run_task = asyncio.create_task(cable.run(lambda e: None, stop=stop))
+        await asyncio.sleep(0.1)
+        stop.set()
+        await asyncio.wait_for(run_task, timeout=2)
+
+    messages = [(r.levelno, r.getMessage()) for r in caplog.records]
+    failed = [i for i, (_, m) in enumerate(messages) if "handshake failed" in m]
+    reconnect = [i for i, (_, m) in enumerate(messages) if "reconnecting in" in m]
+    assert failed and reconnect
+    assert failed[0] < reconnect[0], "the reason comes before the reconnect line"
+    level, text = messages[failed[0]]
+    assert level == logging.WARNING
+    assert "HTTP 404" in text and "missing origin" in text
+
+
+def test_handshake_reason_is_one_short_line_from_phrase_and_body():
+    from saltapp.cable import _handshake_reason
+
+    class Resp:
+        reason_phrase = "Not Found"
+        body = b"Not Found\nsecond line ignored"
+
+    assert _handshake_reason(Resp()) == "Not Found"
+
+    class Resp2:
+        reason_phrase = "Forbidden"
+        body = b"origin required\nmore"
+
+    assert _handshake_reason(Resp2()) == "Forbidden: origin required"
+
+    class Bare:
+        reason_phrase = ""
+        body = b""
+
+    assert _handshake_reason(Bare()) is None
+
+
+# -- a handler that waits on this connection's own frames must not stall it ----
+
+
+@pytest.mark.asyncio
+async def test_a_handler_awaiting_a_later_frame_does_not_block_pings_or_that_frame():
+    """ctx.ask parks a handler on a reply that arrives over THIS connection.
+    on_event runs as its own task, so the reply frame is still read (and the
+    pings still refresh the watchdog) while the first handler waits."""
+    answer: asyncio.Future = asyncio.get_running_loop().create_future()
+    seen: list[str] = []
+    finished: list[str] = []
+
+    async def on_connect(conn, uri, headers):
+        while not conn.sent:
+            await asyncio.sleep(0.005)
+        await conn.push({"type": "welcome"})
+        await conn.push({"type": "confirm_subscription"})
+        await conn.push({"message": envelope(1, {"message": {"chat_id": "c1", "message": "ask", "user": {"id": "u1"}}})})
+        await conn.push({"message": {"type": "replay_done", "cursor": 1}})
+        # Well past the watchdog window, with pings only.
+        for _ in range(8):
+            await asyncio.sleep(0.05)
+            await conn.push({"type": "ping", "message": 1})
+        await conn.push({"message": envelope(2, {"message": {"chat_id": "c1", "message": "the answer", "user": {"id": "u1"}}})})
+
+    connector = FakeConnector(on_connect)
+    # http handler answers the ack GET
+    def http_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"updates": [], "cursor": 2})
+
+    cable = make_cable(http_handler, connector, ping_timeout=0.25)
+
+    async def on_event(event):
+        text = event.body["message"]["message"]
+        seen.append(text)
+        if text == "ask":
+            finished.append(await answer)
+        else:
+            answer.set_result(text)
+
+    stop = asyncio.Event()
+    run_task = asyncio.create_task(cable.run(on_event, stop=stop))
+    await asyncio.wait_for(asyncio.shield(_wait_until(lambda: finished)), timeout=3)
+    stop.set()
+    await asyncio.wait_for(run_task, timeout=2)
+
+    assert finished == ["the answer"]
+    assert len(connector.connections) == 1, "no dead-connection reconnect while the handler waited"
+    assert seen == ["ask", "the answer"]
+
+
+async def _wait_until(predicate, interval: float = 0.01):
+    while not predicate():
+        await asyncio.sleep(interval)
