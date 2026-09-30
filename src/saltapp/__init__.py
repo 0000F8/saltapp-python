@@ -19,6 +19,7 @@ __version__ = "0.3.5"
 from saltapp.agent import Agent, AskResult, AskTimeout
 from saltapp.errors import SaltApiError, SaltAppError
 from saltapp.identity import Identity
+from saltapp.register import RegisteredAgent, register_agent, register_agent_async
 
 __all__ = [
     "__version__",
@@ -26,6 +27,9 @@ __all__ = [
     "AskResult",
     "AskTimeout",
     "Identity",
+    "RegisteredAgent",
+    "register_agent",
+    "register_agent_async",
     "SaltApiError",
     "SaltAppError",
 ]

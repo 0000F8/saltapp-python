@@ -14,6 +14,7 @@ from __future__ import annotations
 import time
 import uuid
 from typing import Any, Mapping, Sequence
+from urllib.parse import urlencode
 
 import httpx
 
@@ -310,6 +311,13 @@ class SaltClient:
         """Back to the unwritten default ("addressed"), same shape as never
         having set one."""
         return self._request("DELETE", f"/api/v1/chats/{chat_id}/subscription", api_key)
+
+    def search_contacts(self, api_key: str, *, username: str | None = None, q: str | None = None) -> list[dict[str, Any]]:
+        """Exact-match lookup by handle (`username`) or one-box `q` (a handle
+        with or without "@", or a fingerprint). Never fuzzy, so someone who
+        is not discoverable is still found by their exact handle."""
+        params = {k: v for k, v in (("username", username), ("q", q)) if v}
+        return self._request("GET", "/api/v1/search/contacts?" + urlencode(params), api_key)
 
     def create_or_get_chat(self, api_key: str, contact_id: str) -> dict[str, Any]:
         return self._request("POST", "/api/v1/chats", api_key, {"contact_id": contact_id})
@@ -820,6 +828,13 @@ class AsyncSaltClient:
     async def clear_chat_subscription(self, api_key: str, chat_id: str) -> dict[str, Any]:
         """See SaltClient.clear_chat_subscription."""
         return await self._request("DELETE", f"/api/v1/chats/{chat_id}/subscription", api_key)
+
+    async def search_contacts(self, api_key: str, *, username: str | None = None, q: str | None = None) -> list[dict[str, Any]]:
+        """Exact-match lookup by handle (`username`) or one-box `q` (a handle
+        with or without "@", or a fingerprint). Never fuzzy, so someone who
+        is not discoverable is still found by their exact handle."""
+        params = {k: v for k, v in (("username", username), ("q", q)) if v}
+        return await self._request("GET", "/api/v1/search/contacts?" + urlencode(params), api_key)
 
     async def create_or_get_chat(self, api_key: str, contact_id: str) -> dict[str, Any]:
         return await self._request("POST", "/api/v1/chats", api_key, {"contact_id": contact_id})

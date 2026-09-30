@@ -185,3 +185,56 @@ async def test_approve_false_on_typed_no():
     agent._ask_registry.try_resolve_message("chat-6", "human-1", "no")
     result = await asyncio.wait_for(approve_task, timeout=2)
     assert result is False
+
+
+def make_card_and_patch_handler(card_id: str, posted: list, patched: list, patch_status: int = 200):
+    post_handler = make_recording_card_handler(card_id, posted)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "PATCH":
+            patched.append((request.url.path, json.loads(request.content)))
+            return httpx.Response(patch_status, json={})
+        return post_handler(request)
+
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_ask_marks_card_answered_after_button_tap():
+    posted: list = []
+    patched: list = []
+    agent = make_agent(make_card_and_patch_handler("card-9", posted, patched))
+    ctx = make_ctx(agent)
+
+    task = asyncio.create_task(ctx.ask("Which environment?", options=["staging", "production"], timeout=5))
+    await asyncio.sleep(0.05)
+    action_id = first_action_id(posted)
+    assert agent._ask_registry.try_resolve_card_interaction("card-9", action_id, {"id": "human-1"}, None)
+
+    result = await asyncio.wait_for(task, timeout=2)
+    assert result.value == "staging"
+    assert patched == [
+        (
+            "/api/v1/cards/card-9",
+            {"blocks": [
+                {"type": "section", "text": "Which environment?"},
+                {"type": "section", "text": "Answered: staging"},
+            ]},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_ask_marks_card_answered_after_typed_reply_and_survives_update_failure():
+    posted: list = []
+    patched: list = []
+    agent = make_agent(make_card_and_patch_handler("card-10", posted, patched, patch_status=500))
+    ctx = make_ctx(agent, chat_id="chat-1")
+
+    task = asyncio.create_task(ctx.ask("Which environment?", options=["staging"], free_text=True, timeout=5))
+    await asyncio.sleep(0.05)
+    assert agent._ask_registry.try_resolve_message("chat-1", "human-1", "prod please")
+
+    result = await asyncio.wait_for(task, timeout=2)  # a 500 on the PATCH must not fail the ask
+    assert result.kind == "text" and result.text == "prod please"
+    assert patched[0][1]["blocks"][1] == {"type": "section", "text": "Answered: prod please"}

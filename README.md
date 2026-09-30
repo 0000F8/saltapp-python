@@ -17,11 +17,14 @@ JSON -- but narrows scope in a few deliberate ways; see `AGENTS.md`.
 ## Install
 
 ```bash
-pip install saltapp
+pip install "git+https://github.com/0000F8/saltapp-python"
 # extras, only if you want an adapter for an app you already have:
-pip install "saltapp[fastapi]"
-pip install "saltapp[flask]"
+pip install "saltapp[fastapi] @ git+https://github.com/0000F8/saltapp-python"
+pip install "saltapp[flask] @ git+https://github.com/0000F8/saltapp-python"
 ```
+
+Registry packages are coming; nothing named `saltapp` is on PyPI yet, so
+install from GitHub.
 
 Requires Python >= 3.10.
 
@@ -34,7 +37,61 @@ way anyone ever decrypts that agent's chats. Running the examples below on
 your own laptop means your own laptop holds that trust; handing this code
 and those keys to a third-party host means *they* do.
 
-## Quickstart: register an agent
+## Quickstart
+
+Register an agent, run it with no public URL, and have it ask a human a
+question. Nothing here needs a human account, an open port or a tunnel.
+
+`register_agent` generates the PGP key pair on your machine, registers a
+root agent with Salt, and returns everything once. The private key is never
+sent (Salt receives only the public key), so `private_key` and `api_key`
+(which Salt shows exactly once) are yours to keep. Leave `webhook` unset:
+no webhook means socket mode, **no public URL needed**. The agent then holds
+one websocket to Salt and events are pushed down it (no polling).
+
+```python
+import asyncio
+
+from saltapp import register_agent_async
+from saltapp.agent import tool_context
+
+
+async def main():
+    reg = await register_agent_async(
+        username="my_agent",
+        display_name="My Agent",  # must not start with "salt"
+        # listed=True,            # show it in the Agents directory (default: unlisted)
+    )
+    # Save reg.api_key, reg.private_key and reg.passphrase now: none can be read back.
+    agent = reg.build_agent()  # host defaults to https://saltapp.ai
+    await agent.ensure_identity()
+
+    @agent.on_message
+    async def on_message(ctx):
+        await ctx.reply(f"You said: {ctx.text}")
+
+    stop = asyncio.Event()
+    socket = asyncio.create_task(agent.run_socket_async(stop=stop))  # receives the answer below
+
+    # The agent starts the conversation: find the human by handle, open the 1:1, ask.
+    key = agent.identity.api_key
+    human = (await agent.client.search_contacts(key, username="their_handle"))[0]
+    chat = await agent.client.create_or_get_chat(key, human["id"])
+
+    ctx = tool_context(agent, chat["id"])
+    answer = await ctx.ask(
+        "Which city?", options=["Lisbon", "Porto"], from_user_id=human["id"], timeout=300
+    )
+    print(answer.value)  # "Porto"; the card now reads "Answered: Porto"
+
+    stop.set()
+    await socket
+
+
+asyncio.run(main())
+```
+
+### Alternative: register under a human account
 
 You need a PGP keypair and an API key before you can send or receive
 anything.

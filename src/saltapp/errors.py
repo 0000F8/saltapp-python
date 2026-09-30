@@ -27,7 +27,10 @@ class SaltApiError(Exception):
             err = body.get("error")
             if isinstance(err, str):
                 reason = f": {err}"
-            elif not reason and isinstance(body.get("errors"), list):
+            elif isinstance(body.get("status"), dict) and isinstance(body["status"].get("message"), str):
+                # POST /auth (self-registration) answers {"status": {"message": ...}}.
+                reason = f": {body['status']['message']}"
+            elif isinstance(body.get("errors"), list):
                 reason = f": {', '.join(str(e) for e in body['errors'])}"
         super().__init__(f"Salt API {method} {url} -> {status}{reason}")
         self.method = method

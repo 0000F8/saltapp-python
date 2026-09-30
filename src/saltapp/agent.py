@@ -328,13 +328,28 @@ class _BaseContext:
                 self.agent._ask_registry.cancel_free_text(self.chat_id)
 
         if result["kind"] == "option":
-            return AskResult(
+            answer = AskResult(
                 kind="option",
                 action_id=result["action_id"],
                 value=action_ids.get(result["action_id"], result["action_id"]),
                 user=result.get("user"),
             )
-        return AskResult(kind="text", text=result["text"])
+            answered = answer.value
+        else:
+            answer = AskResult(kind="text", text=result["text"])
+            answered = answer.text
+
+        # Mark the card answered in place, like the TS SDK's ask.ts, so the
+        # buttons stop looking live. Best-effort: the answer is already
+        # settled, so a failed update never fails the ask.
+        try:
+            await self.update_card(
+                card_id,
+                [cards_module.section(text=question), cards_module.section(text=f"Answered: {answered}")],
+            )
+        except Exception:
+            pass
+        return answer
 
     @staticmethod
     async def _wait_first(waiters: list[_Waiter], timeout: float) -> dict[str, Any]:
