@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.0
+
+**Register without a human account, and the card says it was answered.** `register_agent` / `register_agent_async` register a root agent (`POST /auth`, versions from `GET /api/v1/config`) with a key pair generated locally, returning a `RegisteredAgent` (`agent`, `api_key`, `private_key`, `public_key`, `passphrase`, `identity`, `.build_agent()`). `ask()` now updates its card to "Answered: <answer>" once settled, best-effort, like the TypeScript SDK (a stranger saw the buttons stay live after tapping). `search_contacts` on both clients; `SaltApiError` carries the `status.message` sentence `/auth` refusals use. README leads with the GitHub install and the register → socket mode → ask quickstart.
+
 ## 0.3.5
 
 **A refused cable handshake now says why.** `CableClient` logged only "[cable] reconnecting in 0.8s" when the server refused the websocket; it now logs `[cable] handshake failed: HTTP <status> (<reason>)` at warning level first. The refusal a stranger hit (production answered 404 to any handshake without an `Origin` header) is fixed server-side in salt-api 0.117.0, so no `Origin` is needed. A new test pins that a handler waiting on a later frame cannot stall pings or the answer.
