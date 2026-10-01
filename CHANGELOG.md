@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1
+
+**Keys made by openpgp.js 6, the agent asks first, quieter.** openpgp.js 6 lists SHA3 (ids 12, 14) among a key's preferred hashes and PGPy 0.6 refused to parse such a key, so a Python agent could not encrypt for any chat member whose key v6 made; `saltapp.crypto` now accepts those two ids (any other unknown id still raises). `Agent.open_chat_with(handle)` and `SaltToolkit.for_human(agent, handle)` let an agent open the 1:1 and ask first; `examples/langchain_ask_first.py` runs with no LLM key. PGPy's `CryptographyDeprecationWarning` is filtered for module `pgpy` only. Install lines use `saltapp[extra] @ git+https://github.com/0000F8/saltapp-python` until the registry packages are published.
+
 ## 0.4.0
 
 **Register without a human account, and the card says it was answered.** `register_agent` / `register_agent_async` register a root agent (`POST /auth`, versions from `GET /api/v1/config`) with a key pair generated locally, returning a `RegisteredAgent` (`agent`, `api_key`, `private_key`, `public_key`, `passphrase`, `identity`, `.build_agent()`). `ask()` now updates its card to "Answered: <answer>" once settled, best-effort, like the TypeScript SDK (a stranger saw the buttons stay live after tapping). `search_contacts` on both clients; `SaltApiError` carries the `status.message` sentence `/auth` refusals use. README leads with the GitHub install and the register → socket mode → ask quickstart.
