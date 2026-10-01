@@ -11,7 +11,21 @@
 from __future__ import annotations
 
 import base64
+import warnings
 from dataclasses import dataclass
+
+# pgpy 0.6 builds its cipher table from cryptography classes that
+# cryptography has since moved to `hazmat.decrepit` (TripleDES, Camellia,
+# CFB), so every run printed a CryptographyDeprecationWarning from pgpy's
+# own modules. Silence exactly that category, and only when raised from
+# pgpy -- never a blanket filter, never another library's warning. It must
+# be installed before `import pgpy`: pgpy's module bodies emit some of them.
+try:
+    from cryptography.utils import CryptographyDeprecationWarning as _CryptographyDeprecationWarning
+except ImportError:  # pragma: no cover -- very old cryptography
+    _CryptographyDeprecationWarning = None
+if _CryptographyDeprecationWarning is not None:
+    warnings.filterwarnings("ignore", category=_CryptographyDeprecationWarning, module=r"pgpy(\.|$)")
 
 import pgpy
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -29,6 +43,33 @@ from saltapp.errors import SaltAppError
 
 class CryptoError(SaltAppError):
     """A PGP operation (decrypt, encrypt, key parse) failed."""
+
+
+# RFC 9580 ids pgpy's HashAlgorithm enum does not list.
+_NEWER_HASH_IDS = {12: "SHA3_256", 14: "SHA3_512"}
+
+
+def _hash_algorithm_missing(cls, value):
+    """pgpy's HashAlgorithm enum stops at SHA-224, so a key whose
+    preferred-hash subpacket lists SHA3-256/512 (ids 12 and 14) raises
+    `14 is not a valid HashAlgorithm` at parse time. openpgp.js 6 writes
+    exactly those, so every key made by a fresh `npm install openpgp` was
+    unreadable to pgpy. The subpacket is a preference list inside a
+    self-signature: parsing and encrypting never need the algorithm, and the
+    bytes (and so the signature over them) round-trip unchanged. Only those
+    two RFC 9580 ids are admitted; any other unknown id still raises
+    pgpy's own ValueError."""
+    name = _NEWER_HASH_IDS.get(value)
+    if name is None:
+        return None
+    member = int.__new__(cls, value)
+    member._name_ = name
+    member._value_ = value
+    member._tuned_count = 255
+    return member
+
+
+HashAlgorithm._missing_ = classmethod(_hash_algorithm_missing)
 
 
 @dataclass(frozen=True)

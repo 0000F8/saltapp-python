@@ -2,7 +2,7 @@
 for CAMEL's own `HumanToolkit` -- same `ask_human_via_console`/
 `send_message_to_user` tool names, routed to Salt instead of the console.
 
-Setup: pip install "saltapp[camel]" and an LLM CAMEL can use (e.g.
+Setup: pip install "saltapp[camel] @ git+https://github.com/0000F8/saltapp-python" and an LLM CAMEL can use (e.g.
 OPENAI_API_KEY), then:
 
     export SALT_API_KEY=...  APP_PUBLIC_KEY=...  APP_PRIVATE_KEY=...  PGP_PASSPHRASE=...

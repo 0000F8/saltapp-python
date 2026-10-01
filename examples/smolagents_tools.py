@@ -2,7 +2,7 @@
 `ask_human` -- the model itself decides to ask the human a real question
 on Salt mid-task, no separate approval framework needed.
 
-Setup: pip install "saltapp[smolagents]" and a model smolagents can use
+Setup: pip install "saltapp[smolagents] @ git+https://github.com/0000F8/saltapp-python" and a model smolagents can use
 (e.g. HF_TOKEN for an InferenceClientModel), then:
 
     export SALT_API_KEY=...  APP_PUBLIC_KEY=...  APP_PRIVATE_KEY=...  PGP_PASSPHRASE=...

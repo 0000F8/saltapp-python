@@ -648,6 +648,21 @@ class Agent:
 
     # -- setup --
 
+    async def open_chat_with(self, handle: str) -> dict[str, Any]:
+        """Open (or reuse) this agent's 1:1 chat with the account whose exact
+        handle is `handle` ("@" optional) and return the chat. This is the
+        agent-asks-first path: a `chat_id` otherwise only exists once
+        someone has written to the agent. Raises `SaltAppError` when no
+        account has that handle."""
+        wanted = handle.strip().lstrip("@")
+        if not wanted:
+            raise SaltAppError("open_chat_with needs a handle")
+        found = await self.client.search_contacts(self.identity.api_key, username=wanted)
+        match = next((c for c in found if str(c.get("username", "")).lower() == wanted.lower()), None)
+        if match is None:
+            raise SaltAppError(f"No Salt account has the handle @{wanted}.")
+        return await self.client.create_or_get_chat(self.identity.api_key, match["id"])
+
     async def ensure_identity(self) -> Identity:
         """Fills in `agent_id` and `webhook_secret` from salt-api if not
         already known -- salt-api is the only authority on which id an

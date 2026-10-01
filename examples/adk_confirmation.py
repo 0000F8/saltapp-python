@@ -1,7 +1,7 @@
 """Google ADK example: an LlmAgent whose `request_payment` tool needs
 confirmation, resolved by asking on Salt instead of a console prompt.
 
-Setup: pip install "saltapp[adk]" and Gemini access (e.g. GOOGLE_API_KEY),
+Setup: pip install "saltapp[adk] @ git+https://github.com/0000F8/saltapp-python" and Gemini access (e.g. GOOGLE_API_KEY),
 then:
 
     export SALT_API_KEY=...  APP_PUBLIC_KEY=...  APP_PRIVATE_KEY=...  PGP_PASSPHRASE=...

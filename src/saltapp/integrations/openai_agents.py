@@ -2,7 +2,7 @@
 # function tools, plus a resolver for the SDK's `needs_approval` human-in-
 # the-loop hook.
 #
-# Needs the `openai_agents` extra: pip install "saltapp[openai_agents]"
+# Needs the `openai_agents` extra: pip install "saltapp[openai_agents] @ git+https://github.com/0000F8/saltapp-python"
 #
 # Verified against the `openai-agents` package (0.22.3, 2026-09): current
 # docs lead with `from agents.decorators import tool` (the classic
@@ -25,7 +25,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
     raise ImportError(
         "saltapp.integrations.openai_agents requires the 'openai_agents' extra: "
-        "pip install 'saltapp[openai_agents]'"
+        "pip install 'saltapp[openai_agents] @ git+https://github.com/0000F8/saltapp-python'"
     ) from exc
 
 from saltapp.agent import Agent

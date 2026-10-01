@@ -3,7 +3,7 @@
 # so a graph can pause, ask a human on Salt (buttons or free text), and
 # resume with `Command(resume=answer)` the moment they answer.
 #
-# Needs the `langchain` extra: pip install "saltapp[langchain]"
+# Needs the `langchain` extra: pip install "saltapp[langchain] @ git+https://github.com/0000F8/saltapp-python"
 # (langchain-core for the toolkit; langgraph for the interrupt bridge --
 # only imported lazily, inside the functions that need it, so importing
 # this module doesn't require langgraph if you only want the toolkit).
@@ -64,7 +64,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
     raise ImportError(
         "saltapp.integrations.langchain requires the 'langchain' extra: "
-        "pip install 'saltapp[langchain]'"
+        "pip install 'saltapp[langchain] @ git+https://github.com/0000F8/saltapp-python'"
     ) from exc
 
 from saltapp.agent import Agent
@@ -96,6 +96,19 @@ class SaltToolkit(BaseToolkit):
 
     agent: Agent
     chat_id: str
+
+    @classmethod
+    async def for_human(cls, agent: Agent, handle: str) -> "SaltToolkit":
+        """The toolkit for a chat the AGENT opens: finds the account with
+        this exact handle, opens (or reuses) the 1:1 and scopes the tools to
+        it, so an agent can ask first without waiting for a message:
+
+            toolkit = await SaltToolkit.for_human(agent, "ada")
+
+        The agent's socket (`agent.run_socket_async`) must be running
+        alongside, since that is how a tapped answer comes back."""
+        chat = await agent.open_chat_with(handle)
+        return cls(agent=agent, chat_id=str(chat["id"]))
 
     def get_tools(self) -> list[BaseTool]:
         tools = SaltTools(self.agent, self.chat_id)

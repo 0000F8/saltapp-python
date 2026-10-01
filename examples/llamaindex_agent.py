@@ -2,7 +2,7 @@
 `SaltToolSpec`, including `ask_human` -- the model calls it to ask the
 human a real question on Salt mid-task.
 
-Setup: pip install "saltapp[llamaindex]" plus an LLM integration (e.g.
+Setup: pip install "saltapp[llamaindex] @ git+https://github.com/0000F8/saltapp-python" plus an LLM integration (e.g.
 `llama-index-llms-openai` and OPENAI_API_KEY), then:
 
     export SALT_API_KEY=...  APP_PUBLIC_KEY=...  APP_PRIVATE_KEY=...  PGP_PASSPHRASE=...

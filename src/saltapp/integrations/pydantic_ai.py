@@ -2,7 +2,7 @@
 # deferred-tool approval handler that asks on Salt whenever a tool marked
 # `requires_approval=True` needs a human decision.
 #
-# Needs the `pydantic_ai` extra: pip install "saltapp[pydantic_ai]"
+# Needs the `pydantic_ai` extra: pip install "saltapp[pydantic_ai] @ git+https://github.com/0000F8/saltapp-python"
 #
 # Verified against pydantic-ai's current docs (2026-09): `FunctionToolset`
 # (`pydantic_ai.FunctionToolset`) groups plain functions into one toolset,
@@ -24,7 +24,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
     raise ImportError(
         "saltapp.integrations.pydantic_ai requires the 'pydantic_ai' extra: "
-        "pip install 'saltapp[pydantic_ai]'"
+        "pip install 'saltapp[pydantic_ai] @ git+https://github.com/0000F8/saltapp-python'"
     ) from exc
 
 from saltapp.agent import Agent

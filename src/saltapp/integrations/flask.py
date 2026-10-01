@@ -15,7 +15,7 @@ try:
     from flask import Blueprint, jsonify, request
 except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
     raise ImportError(
-        "saltapp.integrations.flask requires the 'flask' extra: pip install 'saltapp[flask]'"
+        "saltapp.integrations.flask requires the 'flask' extra: pip install 'saltapp[flask] @ git+https://github.com/0000F8/saltapp-python'"
     ) from exc
 
 from saltapp.webhook import WebhookVerificationError, handle

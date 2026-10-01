@@ -3,7 +3,7 @@
 # (money-moving calls should be confirmed) resolved through Salt, plus a
 # driver for any tool's `requires_user_input` pause.
 #
-# Needs the `agno` extra: pip install "saltapp[agno]"
+# Needs the `agno` extra: pip install "saltapp[agno] @ git+https://github.com/0000F8/saltapp-python"
 #
 # Verified against Agno 3.0.x docs (2026-09): `Toolkit` (`agno.tools`)
 # registers a fixed list of bound methods via `super().__init__(tools=[...])`
@@ -26,7 +26,7 @@ try:
     from agno.tools import Toolkit
 except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
     raise ImportError(
-        "saltapp.integrations.agno requires the 'agno' extra: pip install 'saltapp[agno]'"
+        "saltapp.integrations.agno requires the 'agno' extra: pip install 'saltapp[agno] @ git+https://github.com/0000F8/saltapp-python'"
     ) from exc
 
 from saltapp.agent import Agent

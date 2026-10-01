@@ -151,3 +151,37 @@ async def test_interrupt_runner_two_node_graph_pauses_and_resumes(posted):
 
     result = await asyncio.wait_for(task, timeout=3)
     assert result == {"prepared": True, "approved": "Yes", "finalized": True}
+
+
+@pytest.mark.asyncio
+async def test_for_human_opens_the_chat_and_scopes_the_tools():
+    import json
+
+    import httpx
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, request.url.query.decode(), request.content))
+        if request.url.path == "/api/v1/search/contacts":
+            return httpx.Response(200, json=[{"id": "u-1", "username": "ada"}])
+        return httpx.Response(200, json={"id": "chat-42"})
+
+    toolkit = await SaltToolkit.for_human(make_agent(handler), "@Ada")
+    assert toolkit.chat_id == "chat-42"
+    assert seen[0][2] == "username=Ada"
+    assert json.loads(seen[1][3]) == {"contact_id": "u-1"}
+    assert {t.name for t in toolkit.get_tools()} >= {"ask_human", "send_message"}
+
+
+@pytest.mark.asyncio
+async def test_for_human_names_a_missing_handle():
+    import httpx
+
+    from saltapp.errors import SaltAppError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[])
+
+    with pytest.raises(SaltAppError, match="@nobody"):
+        await SaltToolkit.for_human(make_agent(handler), "nobody")

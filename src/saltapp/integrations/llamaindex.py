@@ -1,6 +1,6 @@
 # LlamaIndex integration: a `BaseToolSpec` exposing Salt's six tools.
 #
-# Needs the `llamaindex` extra: pip install "saltapp[llamaindex]"
+# Needs the `llamaindex` extra: pip install "saltapp[llamaindex] @ git+https://github.com/0000F8/saltapp-python"
 #
 # Verified against llama-index-core's current source (2026-09):
 # `BaseToolSpec` (`llama_index.core.tools.tool_spec.base`) is a plain class
@@ -22,7 +22,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
     raise ImportError(
         "saltapp.integrations.llamaindex requires the 'llamaindex' extra: "
-        "pip install 'saltapp[llamaindex]'"
+        "pip install 'saltapp[llamaindex] @ git+https://github.com/0000F8/saltapp-python'"
     ) from exc
 
 from saltapp.agent import Agent

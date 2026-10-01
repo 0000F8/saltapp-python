@@ -1,7 +1,7 @@
 # CAMEL-AI integration: a `HumanToolkit`-compatible toolkit whose ask goes
 # to Salt, plus the other five Salt tools.
 #
-# Needs the `camel` extra: pip install "saltapp[camel]"
+# Needs the `camel` extra: pip install "saltapp[camel] @ git+https://github.com/0000F8/saltapp-python"
 #
 # Verified against camel-ai's current source (`camel/toolkits/{base,human_toolkit}.py`,
 # 2026-09): `BaseToolkit` (`camel.toolkits`) requires only `get_tools() ->
@@ -23,7 +23,7 @@ from typing import Any, List, Optional
 try:
     from camel.toolkits import BaseToolkit, FunctionTool
 except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
-    raise ImportError("saltapp.integrations.camel requires the 'camel' extra: pip install 'saltapp[camel]'") from exc
+    raise ImportError("saltapp.integrations.camel requires the 'camel' extra: pip install 'saltapp[camel] @ git+https://github.com/0000F8/saltapp-python'") from exc
 
 from saltapp.agent import Agent
 from saltapp.integrations._tools import SaltTools, run_sync

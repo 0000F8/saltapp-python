@@ -1,7 +1,7 @@
 # smolagents (Hugging Face) integration: Salt's six tools as `Tool`
 # instances.
 #
-# Needs the `smolagents` extra: pip install "saltapp[smolagents]"
+# Needs the `smolagents` extra: pip install "saltapp[smolagents] @ git+https://github.com/0000F8/saltapp-python"
 #
 # Verified against smolagents docs (v1.26.0, 2026-09): `Tool` (from
 # `smolagents`) is a class with `name`/`description`/`inputs`
@@ -24,7 +24,7 @@ try:
     from smolagents import Tool
 except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
     raise ImportError(
-        "saltapp.integrations.smolagents requires the 'smolagents' extra: pip install 'saltapp[smolagents]'"
+        "saltapp.integrations.smolagents requires the 'smolagents' extra: pip install 'saltapp[smolagents] @ git+https://github.com/0000F8/saltapp-python'"
     ) from exc
 
 from saltapp.agent import Agent

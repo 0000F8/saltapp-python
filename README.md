@@ -456,18 +456,19 @@ chat they're already in -- never a second inbox.
 The six tools' shared implementation lives in one place
 (`saltapp.integrations._tools.SaltTools`) so every framework file below is
 a thin shell: a schema (or plain function signature) plus a call into it.
-Install only the extra(s) you need:
+Install only the extra(s) you need (from GitHub, like the base install;
+registry packages are coming):
 
 ```bash
-pip install "saltapp[langchain]"      # + langgraph, for the interrupt() bridge
-pip install "saltapp[crewai]"
-pip install "saltapp[pydantic_ai]"
-pip install "saltapp[agno]"
-pip install "saltapp[adk]"            # Google Agent Development Kit
-pip install "saltapp[openai_agents]"  # the openai-agents package
-pip install "saltapp[smolagents]"
-pip install "saltapp[llamaindex]"
-pip install "saltapp[camel]"          # camel-ai
+pip install "saltapp[langchain] @ git+https://github.com/0000F8/saltapp-python"      # + langgraph, for the interrupt() bridge
+pip install "saltapp[crewai] @ git+https://github.com/0000F8/saltapp-python"
+pip install "saltapp[pydantic_ai] @ git+https://github.com/0000F8/saltapp-python"
+pip install "saltapp[agno] @ git+https://github.com/0000F8/saltapp-python"
+pip install "saltapp[adk] @ git+https://github.com/0000F8/saltapp-python"            # Google Agent Development Kit
+pip install "saltapp[openai_agents] @ git+https://github.com/0000F8/saltapp-python"  # the openai-agents package
+pip install "saltapp[smolagents] @ git+https://github.com/0000F8/saltapp-python"
+pip install "saltapp[llamaindex] @ git+https://github.com/0000F8/saltapp-python"
+pip install "saltapp[camel] @ git+https://github.com/0000F8/saltapp-python"          # camel-ai
 ```
 
 | Module | Tool shape | Human-in-the-loop bridge |
@@ -482,11 +483,20 @@ pip install "saltapp[camel]"          # camel-ai
 | `saltapp.integrations.llamaindex` | `SaltToolSpec` (`BaseToolSpec`) | Same as smolagents -- `ask_human`/`aask_human` are called directly by the model. Also published standalone as `llama-index-tools-saltapp` (`packages/llama-index-tools-saltapp/`), LlamaHub's own naming convention. |
 | `saltapp.integrations.camel` | `SaltHumanToolkit` (`BaseToolkit`) | Drop-in replacement for `camel.toolkits.HumanToolkit`: same `ask_human_via_console`/`send_message_to_user` method names, routed to Salt instead of the console. |
 
-`saltapp.integrations.langchain` also ships as the standalone
-`langchain-saltapp` package (`packages/langchain-saltapp/`), matching how
-LangChain's docs list partner packages. Both partner packages are thin
-re-exports -- all the logic stays in `saltapp` itself, so there's one
-place to fix a bug, not two.
+`saltapp.integrations.langchain` is also packaged as a standalone
+`langchain-saltapp` (`packages/langchain-saltapp/`), matching how
+LangChain's docs list partner packages. It is not published yet, so use
+the extra above. Both partner packages are thin re-exports -- all the
+logic stays in `saltapp` itself, so there's one place to fix a bug, not
+two.
+
+To ask first (the agent opens the chat, nobody has written to it yet),
+`await SaltToolkit.for_human(agent, "ada")` finds that handle, opens the 1:1
+and returns a toolkit scoped to it; `agent.open_chat_with("ada")` is the
+same lookup on its own. `examples/langchain_ask_first.py` runs it end to
+end with a scripted tool call and no LLM key, and says how to swap in a
+model. Keep `agent.run_socket_async()` running while a question is open --
+that is how the tapped answer comes back.
 
 Runnable cookbooks for all nine live in `examples/` (`langgraph_interrupt.py`
 is the flagship: a graph that pauses, asks a human on Salt with buttons,

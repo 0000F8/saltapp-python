@@ -2,7 +2,7 @@
 review, routed through Salt instead of a console prompt -- plus the
 documented `SaltAskHumanTool` any crew can call directly.
 
-Setup: pip install "saltapp[crewai]" and an LLM CrewAI can use (e.g.
+Setup: pip install "saltapp[crewai] @ git+https://github.com/0000F8/saltapp-python" and an LLM CrewAI can use (e.g.
 OPENAI_API_KEY for the default model), then:
 
     export SALT_API_KEY=...  APP_PUBLIC_KEY=...  APP_PRIVATE_KEY=...  PGP_PASSPHRASE=...

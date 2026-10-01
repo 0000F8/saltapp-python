@@ -2,7 +2,7 @@
 `needs_approval`, resolved by asking on Salt (see `resolve_interruptions`)
 instead of auto-approving or blocking on a console prompt.
 
-Setup: pip install "saltapp[openai_agents]" and OPENAI_API_KEY, then:
+Setup: pip install "saltapp[openai_agents] @ git+https://github.com/0000F8/saltapp-python" and OPENAI_API_KEY, then:
 
     export SALT_API_KEY=...  APP_PUBLIC_KEY=...  APP_PRIVATE_KEY=...  PGP_PASSPHRASE=...
     python examples/openai_agents_approval.py

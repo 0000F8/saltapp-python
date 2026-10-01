@@ -81,3 +81,59 @@ def test_decrypt_attachment_bad_key_fails():
             base64.b64encode(other_key).decode(),
             base64.b64encode(iv).decode(),
         )
+
+
+# ---- keys from openpgp.js 6 (SHA3 ids in the preferred-hash subpacket) ------
+
+import json
+import pathlib
+import subprocess
+import sys
+
+_V6 = json.loads((pathlib.Path(__file__).parent / "fixtures" / "openpgp_v6_key.json").read_text())
+
+
+def test_parses_a_real_openpgp_v6_public_key():
+    from saltapp.crypto import fingerprint_of
+
+    assert len(fingerprint_of(_V6["public_key"])) == 40
+
+
+def test_encrypts_to_an_openpgp_v6_key_and_to_a_pgpy_key_together():
+    from saltapp.crypto import decrypt, encrypt_for, generate_keypair
+
+    mine = generate_keypair("pw")
+    armored = encrypt_for("hello v6", [_V6["public_key"], mine.public_key])
+    assert decrypt(armored, mine.private_key, "pw") == "hello v6"
+    # The recorded ciphertext of this same call was decrypted by openpgp@6
+    # with the fixture's private key (see the fixture's _about); the copy in
+    # the fixture is what that run produced.
+    assert "BEGIN PGP MESSAGE" in _V6["pgpy_ciphertext"]
+
+
+def test_decrypts_what_openpgp_v6_encrypted_to_its_own_key():
+    from saltapp.crypto import decrypt
+
+    assert decrypt(_V6["openpgp_ciphertext"], _V6["private_key"], "") == _V6["openpgp_plaintext"]
+
+
+def test_other_unknown_hash_ids_still_raise_pgpys_error():
+    from pgpy.constants import HashAlgorithm
+
+    import saltapp.crypto  # noqa: F401
+
+    with pytest.raises(ValueError):
+        HashAlgorithm(99)
+
+
+def test_importing_saltapp_emits_no_cryptography_deprecation_warning():
+    # A fresh interpreter: pytest's own warning capture would hide the
+    # import-time warnings pgpy emits.
+    code = (
+        "import warnings; warnings.simplefilter('always'); "
+        "import saltapp; from saltapp.crypto import generate_keypair, encrypt_for; "
+        "k = generate_keypair('pw'); encrypt_for('x', [k.public_key])"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert "CryptographyDeprecationWarning" not in proc.stderr

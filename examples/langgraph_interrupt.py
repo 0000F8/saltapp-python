@@ -2,7 +2,7 @@
 question ON SALT (with tappable buttons), and resumes the graph the moment
 they answer -- no console, no web inbox, just the chat they're already in.
 
-Setup: pip install "saltapp[langchain]" and register a Salt agent (see the
+Setup: pip install "saltapp[langchain] @ git+https://github.com/0000F8/saltapp-python" and register a Salt agent (see the
 package README's "Quickstart: register an agent"), then:
 
     export SALT_API_KEY=...  APP_PUBLIC_KEY=...  APP_PRIVATE_KEY=...  PGP_PASSPHRASE=...

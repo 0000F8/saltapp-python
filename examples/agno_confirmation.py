@@ -1,7 +1,7 @@
 """Agno example: an agent whose `request_payment` tool requires
 confirmation, resolved by asking on Salt (never a console prompt).
 
-Setup: pip install "saltapp[agno]" and an LLM Agno can use (e.g.
+Setup: pip install "saltapp[agno] @ git+https://github.com/0000F8/saltapp-python" and an LLM Agno can use (e.g.
 OPENAI_API_KEY), then:
 
     export SALT_API_KEY=...  APP_PUBLIC_KEY=...  APP_PRIVATE_KEY=...  PGP_PASSPHRASE=...

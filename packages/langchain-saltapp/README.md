@@ -9,16 +9,26 @@ reply, instead of a console prompt or a web inbox.
 ## Install
 
 ```bash
+pip install "saltapp[langchain] @ git+https://github.com/0000F8/saltapp-python"
+```
+
+`langchain-saltapp` is not published to a registry yet, and it is only a re-export of `saltapp.integrations.langchain`, so install the extra from GitHub as above.
+
+```bash
+# once published:
 pip install langchain-saltapp
 ```
 
 ## Usage
 
 ```python
-from langchain_saltapp import SaltToolkit, ask_via_interrupt, SaltInterruptRunner
+# with the GitHub install above:
+from saltapp.integrations.langchain import SaltToolkit, ask_via_interrupt, SaltInterruptRunner
+# once langchain-saltapp is published, the same names from:
+# from langchain_saltapp import SaltToolkit, ask_via_interrupt, SaltInterruptRunner
 ```
 
-See the parent [`saltapp`](https://pypi.org/project/saltapp/) package's
+See the parent [`saltapp`](https://github.com/0000F8/saltapp-python) package's
 `saltapp/integrations/langchain.py` for the full API (this package is a
 thin re-export -- all the logic lives there, so the two stay in lockstep)
 and `saltapp-python`'s `examples/langgraph_interrupt.py` for a runnable
@@ -28,5 +38,4 @@ resumes on the tap.
 ## Links
 
 - [saltapp.ai/developers](https://saltapp.ai/developers)
-- [saltapp on PyPI](https://pypi.org/project/saltapp/)
 - [saltapp-python](https://github.com/0000F8/saltapp-python) (this package's source, under `packages/langchain-saltapp/`)

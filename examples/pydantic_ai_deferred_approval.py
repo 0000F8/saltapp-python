@@ -2,7 +2,7 @@
 approval request is resolved by asking on Salt instead of trusting the
 model or blocking on a console `input()`.
 
-Setup: pip install "saltapp[pydantic_ai]" and an LLM pydantic-ai can use
+Setup: pip install "saltapp[pydantic_ai] @ git+https://github.com/0000F8/saltapp-python" and an LLM pydantic-ai can use
 (e.g. OPENAI_API_KEY), then:
 
     export SALT_API_KEY=...  APP_PUBLIC_KEY=...  APP_PRIVATE_KEY=...  PGP_PASSPHRASE=...

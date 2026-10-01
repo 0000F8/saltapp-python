@@ -2,7 +2,7 @@
 # `Task(human_input=True)`'s feedback prompt through Salt via CrewAI's
 # internal (undocumented) HumanInputProvider extension point.
 #
-# Needs the `crewai` extra: pip install "saltapp[crewai]"
+# Needs the `crewai` extra: pip install "saltapp[crewai] @ git+https://github.com/0000F8/saltapp-python"
 #
 # Verified against crewai 1.15.22 source (2026-09): `BaseTool`
 # (`crewai.tools`) is a pydantic model with an abstract sync `_run(...)`
@@ -29,7 +29,7 @@ try:
     from crewai.tools import BaseTool
 except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
     raise ImportError(
-        "saltapp.integrations.crewai requires the 'crewai' extra: pip install 'saltapp[crewai]'"
+        "saltapp.integrations.crewai requires the 'crewai' extra: pip install 'saltapp[crewai] @ git+https://github.com/0000F8/saltapp-python'"
     ) from exc
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr

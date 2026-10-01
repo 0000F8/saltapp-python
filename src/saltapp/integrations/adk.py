@@ -3,7 +3,7 @@
 # `require_confirmation=True`), plus a resolver that answers a pending
 # `ToolConfirmation` by asking on Salt.
 #
-# Needs the `adk` extra: pip install "saltapp[adk]"
+# Needs the `adk` extra: pip install "saltapp[adk] @ git+https://github.com/0000F8/saltapp-python"
 #
 # Verified against google-adk 2.9.x docs (2026-09): plain functions passed
 # to `tools=[...]` on an `LlmAgent` are auto-wrapped into
@@ -23,7 +23,7 @@ from typing import Any, Optional
 try:
     from google.adk.tools import FunctionTool
 except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
-    raise ImportError("saltapp.integrations.adk requires the 'adk' extra: pip install 'saltapp[adk]'") from exc
+    raise ImportError("saltapp.integrations.adk requires the 'adk' extra: pip install 'saltapp[adk] @ git+https://github.com/0000F8/saltapp-python'") from exc
 
 from saltapp.agent import Agent
 from saltapp.integrations._tools import SaltTools, build_plain_functions

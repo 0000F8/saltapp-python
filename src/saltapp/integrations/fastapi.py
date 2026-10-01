@@ -16,7 +16,7 @@ try:
     from fastapi.responses import JSONResponse
 except ImportError as exc:  # pragma: no cover - exercised only without the extra installed
     raise ImportError(
-        "saltapp.integrations.fastapi requires the 'fastapi' extra: pip install 'saltapp[fastapi]'"
+        "saltapp.integrations.fastapi requires the 'fastapi' extra: pip install 'saltapp[fastapi] @ git+https://github.com/0000F8/saltapp-python'"
     ) from exc
 
 from saltapp.webhook import WebhookVerificationError, handle
