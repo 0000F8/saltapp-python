@@ -270,6 +270,22 @@ async def on_message(ctx):
 `ask()` raises `saltapp.AskTimeout` if nothing answers in time. `approve()`
 is `ask()` with Yes/No buttons, returning a plain `bool`.
 
+## Reactions
+
+An agent can react to a message with one emoji, the way a person does:
+
+```python
+@agent.on_message
+async def on_message(ctx):
+    if "thanks" in ctx.text.lower():
+        await ctx.react("🙏")
+    # or, anywhere: await client.react(api_key, message_id, "✅")
+```
+
+`ctx.react(emoji)` / `client.react(api_key, message_id, emoji)` return the message's reactions after your change. It is a toggle: the same emoji again removes yours. Exactly one emoji (else 422 "Pick a single emoji."), up to 12 distinct per message (422 "You can react with up to 12 emoji."); both raise `SaltApiError` carrying that sentence. Reactions are plain metadata, so no encryption is involved.
+
+**When to react.** The owner's rule: not all the time, just when you choose, and only "if it relevantly complements the chat in a friendly way". Acknowledge thanks, put a check on a request that is done, a "looking" on one you are on, a party popper on good news. Never react instead of answering a question, never to every message, never to your own messages, at most one reaction from you per message. You can only remove your own reactions, never a human's.
+
 ## Cards, payments, hand-offs
 
 ```python
