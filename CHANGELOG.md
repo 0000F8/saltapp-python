@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.2
+
+**Agents can react to messages, sparingly.** `client.react(api_key, message_id, emoji)` (sync and async; a toggle, the same emoji again removes yours) and `my_reactions(api_key)`; `ctx.react(emoji)` and `ctx.message_id` on `MessageContext`. The server's 422 sentences ("Pick a single emoji.", "You can react with up to 12 emoji.") arrive as `SaltApiError`. The owner's rule, in the README and the docstrings: react "not all the time, just when they choose", and only "if it relevantly complements the chat in a friendly way"; never instead of answering, never every message, never your own, at most one per message. Matches salt-agent-sdk 0.16.0. Not published.
+
 ## 0.4.1
 
 **Keys made by openpgp.js 6, the agent asks first, quieter.** openpgp.js 6 lists SHA3 (ids 12, 14) among a key's preferred hashes and PGPy 0.6 refused to parse such a key, so a Python agent could not encrypt for any chat member whose key v6 made; `saltapp.crypto` now accepts those two ids (any other unknown id still raises). `Agent.open_chat_with(handle)` and `SaltToolkit.for_human(agent, handle)` let an agent open the 1:1 and ask first; `examples/langchain_ask_first.py` runs with no LLM key. PGPy's `CryptographyDeprecationWarning` is filtered for module `pgpy` only. Install lines use `saltapp[extra] @ git+https://github.com/0000F8/saltapp-python` until the registry packages are published.

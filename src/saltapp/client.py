@@ -14,7 +14,7 @@ from __future__ import annotations
 import time
 import uuid
 from typing import Any, Mapping, Sequence
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 
@@ -332,6 +332,24 @@ class SaltClient:
             self._request("POST", f"/api/v1/chats/{chat_id}/typing", api_key, {})
         except Exception:  # noqa: BLE001 -- non-fatal by design
             pass
+
+    def react(self, api_key: str, message_id: str, emoji: str) -> dict[str, Any]:
+        """React to a message with ONE emoji (`POST /api/v1/messages/:id/reactions`).
+        A TOGGLE: the same emoji again removes yours. Reactions are plaintext
+        metadata, so there is no encryption. Returns `{message_id,
+        reactions}`; a 422 ("Pick a single emoji." / "You can react with up to
+        12 emoji.") raises SaltApiError carrying that sentence.
+
+        The owner's rule: react "not all the time, just when they choose", and
+        only "if it relevantly complements the chat in a friendly way" -- a
+        thanks acknowledged, a done request marked, good news celebrated.
+        Never instead of answering a question, never on every message, never
+        on your own, at most one per message."""
+        return self._request("POST", f"/api/v1/messages/{quote(str(message_id), safe='')}/reactions", api_key, {"emoji": emoji})
+
+    def my_reactions(self, api_key: str) -> Any:
+        """The emoji this identity has used (`GET /api/v1/reactions/mine`)."""
+        return self._request("GET", "/api/v1/reactions/mine", api_key)
 
     # -- cards --
 
@@ -847,6 +865,14 @@ class AsyncSaltClient:
             await self._request("POST", f"/api/v1/chats/{chat_id}/typing", api_key, {})
         except Exception:  # noqa: BLE001
             pass
+
+    async def react(self, api_key: str, message_id: str, emoji: str) -> dict[str, Any]:
+        """See SaltClient.react -- the owner's rule applies: sparingly, only when it relevantly complements the chat in a friendly way."""
+        return await self._request("POST", f"/api/v1/messages/{quote(str(message_id), safe='')}/reactions", api_key, {"emoji": emoji})
+
+    async def my_reactions(self, api_key: str) -> Any:
+        """See SaltClient.my_reactions."""
+        return await self._request("GET", "/api/v1/reactions/mine", api_key)
 
     async def post_card(self, api_key: str, chat_id: str, blocks: list[dict[str, Any]], text: str) -> dict[str, Any]:
         return await self._request("POST", "/api/v1/cards", api_key, {"chat_id": chat_id, "blocks": blocks, "text": text})

@@ -420,6 +420,25 @@ class MessageContext(_BaseContext):
             return None
         return self.sender_id
 
+    @property
+    def message_id(self) -> Optional[str]:
+        """The id of the message being handled (the delivery's `message_id`)."""
+        return self.raw_message.get("message_id")
+
+    async def react(self, emoji: str) -> dict[str, Any]:
+        """React to THIS message with one emoji; returns the server's reactions summary.
+
+        Use sparingly. The owner's rule: "not all the time, just when they
+        choose", and only "if it relevantly complements the chat in a friendly
+        way" (acknowledge thanks, mark a request done, celebrate good news).
+        Never instead of answering a question, never on every message, never on
+        your own, at most one per message. The same emoji again REMOVES your
+        reaction (the API is a toggle). A rejection (not a single emoji, over
+        the 12 cap) raises SaltApiError with the server's sentence."""
+        if not self.message_id:
+            raise ValueError("this message has no message_id to react to")
+        return await self.agent.client.react(self.agent.identity.api_key, self.message_id, emoji)
+
     async def reply(self, text: str) -> None:
         addressee = self.sender if self.sender.get("account_type") != "Agent" else None
         mentions = [self.sender_id] if addressee and addressee.get("username") else None
