@@ -227,3 +227,49 @@ async def test_reply_in_encrypted_room_still_encrypts(keypair_a):
     assert posted["body"]["message"] != "hello back"
     assert posted["body"]["message"].startswith("-----BEGIN PGP MESSAGE")
     assert "encrypted" not in posted["body"]  # send_message's shape, unchanged
+
+
+def _encrypted_world(keypair_a):
+    posted = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages"):
+            posted.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": "m1"})
+        return httpx.Response(200, json={
+            "session": {"users": [
+                {"id": "self-agent", "public_key": keypair_a.public_key},
+                {"id": "human-1", "public_key": keypair_a.public_key, "account_type": "User"},
+            ]}
+        })
+
+    return posted, make_agent(keypair_a, handler)
+
+
+@pytest.mark.asyncio
+async def test_reply_links_the_message_it_answers_by_default(keypair_a):
+    posted, agent = _encrypted_world(keypair_a)
+    event = message_event(message=crypto.encrypt_for("hi", [keypair_a.public_key]), encrypted=True)
+    mid = event["message"]["message_id"]
+
+    @agent.on_message
+    async def on_message(ctx):
+        await ctx.reply("linked")
+        await ctx.reply("unlinked", reply_to=None)
+        await ctx.reply("other", reply_to="m-12")
+
+    await agent.dispatch(event)
+    assert [b.get("reply_to_message_id") for b in posted] == [mid, None, "m-12"]
+
+
+@pytest.mark.asyncio
+async def test_open_room_reply_links_the_message_too(keypair_a):
+    posted, agent = _encrypted_world(keypair_a)
+    event = message_event(message="hi", encrypted=False)
+
+    @agent.on_message
+    async def on_message(ctx):
+        await ctx.reply("hello")
+
+    await agent.dispatch(event)
+    assert posted[0]["reply_to_message_id"] == event["message"]["message_id"]

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0
+
+**Replies link the message they answer, by default.** `ctx.reply(text)` on `MessageContext` now posts with `reply_to_message_id` set to the handled message (`ctx.message_id`), so Salt shows it quoted above the reply and a person who sent several messages can tell which one is answered. `ctx.reply(text, reply_to=None)` opts out; `reply_to=<id>` links a different message of the same chat. Chat-opened and invoice-paid contexts answer no message and are unchanged. `post_message` / `send_message` (sync and async) gain an optional `reply_to_message_id` and default nothing. Matches salt-agent-sdk 0.17.0. Not published.
+
 ## 0.4.2
 
 **Agents can react to messages, sparingly.** `client.react(api_key, message_id, emoji)` (sync and async; a toggle, the same emoji again removes yours) and `my_reactions(api_key)`; `ctx.react(emoji)` and `ctx.message_id` on `MessageContext`. The server's 422 sentences ("Pick a single emoji.", "You can react with up to 12 emoji.") arrive as `SaltApiError`. The owner's rule, in the README and the docstrings: react "not all the time, just when they choose", and only "if it relevantly complements the chat in a friendly way"; never instead of answering, never every message, never your own, at most one per message. Matches salt-agent-sdk 0.16.0. Not published.

@@ -216,6 +216,7 @@ class SaltClient:
         delegations: list[dict[str, Any]] | None = None,
         mentions: list[str] | None = None,
         quiet: bool = False,
+        reply_to_message_id: str | None = None,
     ) -> dict[str, Any]:
         """Post an already-PGP-encrypted reply into a chat. `message` is the
         ciphertext every human recipient reads; `sender_message` is the copy
@@ -229,6 +230,8 @@ class SaltClient:
             body["mentions"] = mentions
         if quiet:
             body["quiet"] = True
+        if reply_to_message_id:
+            body["reply_to_message_id"] = reply_to_message_id
         return self._request("POST", "/api/v1/messages", api_key, body)
 
     def send_message(
@@ -239,6 +242,7 @@ class SaltClient:
         *,
         mentions: list[str] | None = None,
         quiet: bool = False,
+        reply_to_message_id: str | None = None,
     ) -> dict[str, Any]:
         """Convenience wrapper matching salt-agent-sdk's makeReply: fetches
         the chat's current members, encrypts `text` for every one of them
@@ -253,7 +257,10 @@ class SaltClient:
             )
         encrypted = crypto.encrypt_for(text, recipient_keys)
         sender_copy = crypto.encrypt_for(text, [identity.public_key])
-        return self.post_message(identity.api_key, chat_id, encrypted, sender_copy, mentions=mentions, quiet=quiet)
+        return self.post_message(
+            identity.api_key, chat_id, encrypted, sender_copy, mentions=mentions, quiet=quiet,
+            reply_to_message_id=reply_to_message_id,
+        )
 
     def post_plain_message(
         self,
@@ -778,6 +785,7 @@ class AsyncSaltClient:
         delegations: list[dict[str, Any]] | None = None,
         mentions: list[str] | None = None,
         quiet: bool = False,
+        reply_to_message_id: str | None = None,
     ) -> dict[str, Any]:
         body: _JSON = {"chat_id": chat_id, "message": message}
         if sender_message is not None:
@@ -788,6 +796,8 @@ class AsyncSaltClient:
             body["mentions"] = mentions
         if quiet:
             body["quiet"] = True
+        if reply_to_message_id:
+            body["reply_to_message_id"] = reply_to_message_id
         return await self._request("POST", "/api/v1/messages", api_key, body)
 
     async def send_message(
@@ -798,6 +808,7 @@ class AsyncSaltClient:
         *,
         mentions: list[str] | None = None,
         quiet: bool = False,
+        reply_to_message_id: str | None = None,
     ) -> dict[str, Any]:
         members = await self.get_chat_members(identity.api_key, chat_id)
         recipient_keys = _encryption_recipients(members, identity.agent_id)
@@ -808,7 +819,10 @@ class AsyncSaltClient:
             )
         encrypted = crypto.encrypt_for(text, recipient_keys)
         sender_copy = crypto.encrypt_for(text, [identity.public_key])
-        return await self.post_message(identity.api_key, chat_id, encrypted, sender_copy, mentions=mentions, quiet=quiet)
+        return await self.post_message(
+            identity.api_key, chat_id, encrypted, sender_copy, mentions=mentions, quiet=quiet,
+            reply_to_message_id=reply_to_message_id,
+        )
 
     async def post_plain_message(
         self,
