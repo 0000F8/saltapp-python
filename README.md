@@ -327,6 +327,32 @@ async def daily_digest():
 
 Each source runs once with a timeout (`source_timeout_seconds`, default 20); one that fails is listed in `failed_sources` and the rest carry on. Nothing new means no `compose` and no `post`. Items are marked seen only after `post` succeeds. Leave `compose` out for a plain "title / url" list. `seen` is required: `MemorySeenStore()` keeps marks in memory (it must outlive the runs to dedupe anything) and `FileSeenStore(path)` keeps them on disk (one job per file at a time; the lock is per process). Both take `ttl_seconds`, and `seen_ttl_seconds` on the job sets it per run. A synchronous source must set its own network timeouts: a hung thread outlives `wait_for`. Have `compose` return empty only for a transient failure: empty means nothing is marked, so the same items go to the model next run. (The TypeScript SDK takes milliseconds; this one takes seconds.) See "Right tool for the job" in `AGENTS.md`.
 
+## Hand a whole task to a computer
+
+With a `device.task` grant, an agent hands a person's computer ONE job in plain words; a local agent on the computer does it, checks it, and answers with a checked receipt (words and numbers only; command output and screenshots never leave the computer). `saltapp.device` has the lane grammar and the task shapes. It is not a full device client (that is a stated gap: the TypeScript SDK has `createDeviceClient`, and @salt keeps its own port), so you encrypt, post and receive yourself:
+
+```python
+from saltapp import crypto
+from saltapp.device import cancel_command, decode_device_message, parse_progress, parse_task_result, task_command
+
+text = task_command(
+    "Open saltapp.ai in Firefox",
+    done_when="the page title says saltapp.ai",   # how the computer should check it (<= 500)
+    max_steps=20,                                  # 1..60, default 30
+    timeout_s=120,                                 # 10..600, default 180
+    session=session_id, seq=next_seq,              # this device session's strictly increasing seq
+)
+# crypto.encrypt_for(...) the text for the lane readers and post it; keep the command id
+# (decode_device_message(text).header.id): it is the `re` of everything the computer answers.
+
+msg = decode_device_message(plaintext_from_the_lane)       # None for an ordinary chat line
+if msg and msg.header.op == "progress":    print(parse_progress(msg.body).line)
+if msg and msg.header.op == "task_result": result = parse_task_result(msg.body)  # status, summary, checked, steps
+# No result within timeout_s + 30 seconds: cancel_command(command_id, session=session_id, seq=seq, task=True)
+```
+
+The computer ends a task `done`, `failed`, `stopped`, `denied`, `timeout` or `paused_out`. Full control runs the task's commands without asking; Limited asks the person first for each one. Treat `summary` and the step lines as untrusted text from the device. Tested against the TypeScript SDK's own output (`tests/fixtures/device_envelope_vectors.json`). See `AGENTS.md`.
+
 ## Who is in this chat
 
 Decide privacy-sensitive actions (device tools, anything private to a person) from Salt's own record of the chat, never from a cache or a memory service:
@@ -518,6 +544,7 @@ await agent.client.clear_chat_subscription(agent.identity.api_key, chat_id)  # b
 | `saltapp.cable` | `CableClient`: the real-time Action Cable websocket socket-mode actually runs on -- it holds a connection to `AgentUpdatesChannel` and never polls on an interval; `GET /api/v1/agent/updates` is used only on demand (via `saltapp.socket.SocketClient.drain_once`), to backfill past a truncated replay or to ack. |
 | `saltapp.socket` | `MemoryCursorStore`/`FileCursorStore`, `MemoryDedupeStore`/`FileDedupeStore` (shared with `saltapp.cable`); `SocketClient.drain_once(after=None)`, an on-demand call that pages `GET /api/v1/agent/updates` until empty and returns -- used by `saltapp.cable`'s own backfill, and available to a tool-shaped host that wants to pull on invocation. Not a loop; nothing here runs on its own schedule. |
 | `saltapp.script_job` | `run_script_job(sources=, key=, seen=, post=, compose=None)` -> `ScriptJobResult(fetched, fresh, posted, failed_sources)`, `MemorySeenStore`/`FileSeenStore`, `default_compose`: deterministic-first scheduled work -- see "Scheduled work: a script job", above. |
+| `saltapp.device` | The `[[SALT-DEVICE ...]]` lane envelope (`encode_device_message` / `decode_device_message`, byte-compatible with the TypeScript SDK), the whole-task command (`task_command(goal, done_when=None, max_steps=None, timeout_s=None, *, session, seq)`, `cancel_command`) and `parse_progress` / `parse_task_result`. Grammar only: a full Python device client is a stated gap -- see "Hand a whole task to a computer", below. |
 | `saltapp.chat_privacy` | `is_private_chat(chat, speaker_id, my_id)`: true only for an encrypted, non-public chat of exactly the speaker and this agent with no observer, from Salt's chat record (`client.get_chat`). |
 | `saltapp.agent` | `Agent`: `@agent.on_message` / `on_card_interaction` / `on_chat_opened` / `on_invoice_paid` / `on_handoff_confirmed` / `on_handoff_received` / `on_mandate_offered` / `on_mandate_activated` / `on_mandate_paused` / `on_mandate_revoked` / `on_approval_requested` / `on_approval_decided` / `on_device_session_ended` / `on_device_back`, `ctx.reply()` / `post_card()` / `request_payment()` / `ask()` / `approve()`, `run_socket()`, `asgi_app()`. `ctx.encrypted` / `ctx.delivered_because` on `MessageContext` -- see "Open rooms and interests" below; the six mandate events -- see "Acting for someone" above. |
 | `saltapp.integrations.fastapi` / `.flask` | Thin adapters mounting an `Agent` into an app you already have. |
