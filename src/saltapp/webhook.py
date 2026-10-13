@@ -34,7 +34,7 @@ DELIVERY_ID_HEADER = "X-Salt-Delivery-Id"
 
 DEFAULT_TOLERANCE_SECONDS = 300
 
-EventType = str  # "message" | "card_interaction" | "invoice_paid" | "chat_opened" | "handoff_confirmed" | "handoff_received" | "mandate_offered" | "mandate_activated" | "mandate_paused" | "mandate_revoked" | "approval_requested" | "approval_decided" | "unknown"
+EventType = str  # "message" | "card_interaction" | "invoice_paid" | "chat_opened" | "handoff_confirmed" | "handoff_received" | "mandate_offered" | "mandate_activated" | "mandate_paused" | "mandate_revoked" | "approval_requested" | "approval_decided" | "device_session_ended" | "device_back" | "unknown"
 
 # Mandates R2 (salt-api's MandateEventJob): same rail as card_interaction/
 # invoice_paid -- a per-recipient plaintext delivery, always carrying an
@@ -48,6 +48,15 @@ _MANDATE_EVENT_TYPES = (
     "mandate_revoked",
     "approval_requested",
     "approval_decided",
+)
+
+# Device moments (salt-api's DeviceSessionEventJob / DeviceBackEventJob, kind
+# `device_session`): the person's computer stopped answering mid-session
+# (`device_session_ended` with end_reason "lost_contact") and is answering
+# again (`device_back`). Plaintext, explicit `type`, never shape-sniffed.
+_DEVICE_EVENT_TYPES = (
+    "device_session_ended",
+    "device_back",
 )
 
 
@@ -141,6 +150,8 @@ def classify(body: dict[str, Any]) -> EventType:
     if explicit in ("card_interaction", "invoice_paid", "chat_opened", "handoff_confirmed", "handoff_received"):
         return explicit
     if explicit in _MANDATE_EVENT_TYPES:
+        return explicit
+    if explicit in _DEVICE_EVENT_TYPES:
         return explicit
     if isinstance(body.get("message"), dict):
         return "message"

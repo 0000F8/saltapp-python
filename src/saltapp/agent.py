@@ -42,6 +42,9 @@ from saltapp.socket import (
 )
 from saltapp.webhook import Event, create_asgi_app
 
+#: The `end_reason` of a device session that ended because the person's computer stopped answering for 15 s.
+DEVICE_LOST_CONTACT = "lost_contact"
+
 DEFAULT_ASK_TIMEOUT_SECONDS = 120.0
 
 # M2 (security review, 2026-09-18): an exact yes/no word (with at most one
@@ -570,6 +573,61 @@ class ApprovalDecidedContext:
         self.exercise = exercise
 
 
+class DeviceSessionEndedContext:
+    """A device session this agent ran just ended (`device_session_ended`;
+    fires for EVERY `end_reason` -- check `lost_contact`, true for
+    `end_reason == "lost_contact"`: the person's computer stopped answering
+    for 15 s mid-session). `body` is the delivery verbatim.
+
+    There is no `reply()` on purpose: `lane_chat_id` is the device lane the
+    work travelled in, which the person does not read. Say it in the chat the
+    work came from (remember it when you open the session) or their 1:1. The
+    etiquette -- say it once per `session_id`, plainly, that nothing else was
+    sent; never claim an action landed unless a device tool returned it -- is
+    in AGENTS.md ("A computer going quiet")."""
+
+    def __init__(self, agent: "Agent", body: dict[str, Any]) -> None:
+        chat = body.get("chat") if isinstance(body.get("chat"), dict) else {}
+        self.agent = agent
+        self.body = body
+        self.session_id: str = body.get("session_id") or body.get("id")
+        self.device_id: Optional[str] = body.get("device_id")
+        self.mandate_id: Optional[str] = body.get("mandate_id")
+        self.lane_chat_id: Optional[str] = body.get("chat_id") or chat.get("id")
+        self.end_reason: Optional[str] = body.get("end_reason")
+        self.lost_contact: bool = self.end_reason == DEVICE_LOST_CONTACT
+        intent = body.get("intent")
+        self.intent: Optional[str] = intent if isinstance(intent, str) else None
+        self.ended_at: Optional[str] = body.get("ended_at")
+
+
+class DeviceBackContext:
+    """The computer that stopped answering during one of this agent's
+    sessions is answering again (`device_back`): sent once per lost session,
+    within 24 h, while the mandate is still active. Grants nothing -- open a
+    NEW session to continue. Offer to finish, and look at the screen before
+    assuming the last step landed; say it once (`previous_session_id` is the
+    key). `chat_id` is the person's 1:1 with this agent, or None when they
+    have none (then `reply()` raises). `body` is the delivery verbatim."""
+
+    def __init__(self, agent: "Agent", body: dict[str, Any]) -> None:
+        self.agent = agent
+        self.body = body
+        self.device_id: Optional[str] = body.get("device_id")
+        self.device_name: Optional[str] = body.get("device_name")
+        self.previous_session_id: Optional[str] = body.get("previous_session_id")
+        self.offline_at: Optional[str] = body.get("offline_at")
+        self.back_at: Optional[str] = body.get("back_at")
+        self.chat_id: Optional[str] = body.get("chat_id")
+
+    async def reply(self, text: str) -> None:
+        """Encrypts `text` for the 1:1's members and posts it. Raises
+        `SaltAppError` when `chat_id` is None."""
+        if not self.chat_id:
+            raise SaltAppError("device_back: the person has no 1:1 with this agent (chat_id is None), so there is nowhere to reply")
+        await self.agent.client.send_message(self.agent.identity, self.chat_id, text)
+
+
 Handler = Callable[[Any], Awaitable[None]]
 
 
@@ -665,6 +723,21 @@ class Agent:
         self._handlers["approval_decided"] = fn
         return fn
 
+    def on_device_session_ended(self, fn: Handler) -> Handler:
+        """A device session this agent ran just ended, for any reason.
+        `ctx`: `DeviceSessionEndedContext` (`.lost_contact` is true for
+        `end_reason == "lost_contact"`). See **A computer going quiet** in
+        AGENTS.md for the etiquette."""
+        self._handlers["device_session_ended"] = fn
+        return fn
+
+    def on_device_back(self, fn: Handler) -> Handler:
+        """The computer that stopped answering mid-session is back; sent once
+        per lost session. `ctx`: `DeviceBackContext` (`.reply(text)` into the
+        person's 1:1)."""
+        self._handlers["device_back"] = fn
+        return fn
+
     # -- setup --
 
     async def open_chat_with(self, handle: str) -> dict[str, Any]:
@@ -726,6 +799,10 @@ class Agent:
                 await self._handle_approval_requested(event.body)
             elif event.type == "approval_decided":
                 await self._handle_approval_decided(event.body)
+            elif event.type == "device_session_ended":
+                await self._handle_device_session_ended(event.body)
+            elif event.type == "device_back":
+                await self._handle_device_back(event.body)
         except Exception as exc:  # noqa: BLE001
             self._logger.error("[dispatch] handling %s failed: %s", event.type, exc)
 
@@ -886,6 +963,23 @@ class Agent:
         if handler is None or not isinstance(mandate, dict):
             return
         await handler(MandateLifecycleContext(self, mandate))
+
+    async def _handle_device_session_ended(self, body: dict[str, Any]) -> None:
+        handler = self._handlers.get("device_session_ended")
+        if handler is None:
+            return
+        # The same delivery also goes to the computer itself; it is not the agent's to speak of.
+        if self.identity.agent_id and str(body.get("device_id", "")).lower() == self.identity.agent_id.lower():
+            return
+        if not (body.get("session_id") or body.get("id")):
+            return
+        await handler(DeviceSessionEndedContext(self, body))
+
+    async def _handle_device_back(self, body: dict[str, Any]) -> None:
+        handler = self._handlers.get("device_back")
+        if handler is None:
+            return
+        await handler(DeviceBackContext(self, body))
 
     async def _handle_approval_requested(self, body: dict[str, Any]) -> None:
         handler = self._handlers.get("approval_requested")

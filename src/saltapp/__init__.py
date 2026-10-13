@@ -14,22 +14,30 @@ counterpart, salt-agent-sdk.
 
 from __future__ import annotations
 
-__version__ = "0.4.2"
+__version__ = "0.5.0"
 
 from saltapp.agent import Agent, AskResult, AskTimeout
+from saltapp.chat_privacy import is_private_chat
 from saltapp.errors import SaltApiError, SaltAppError
 from saltapp.identity import Identity
 from saltapp.register import RegisteredAgent, register_agent, register_agent_async
+from saltapp.script_job import FileSeenStore, MemorySeenStore, ScriptJobResult, SeenStore, run_script_job
 
 __all__ = [
     "__version__",
     "Agent",
     "AskResult",
     "AskTimeout",
+    "FileSeenStore",
     "Identity",
+    "MemorySeenStore",
     "RegisteredAgent",
     "register_agent",
     "register_agent_async",
+    "run_script_job",
+    "is_private_chat",
+    "ScriptJobResult",
+    "SeenStore",
     "SaltApiError",
     "SaltAppError",
 ]

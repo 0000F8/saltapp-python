@@ -47,6 +47,8 @@ against the real registry does not work -- install from source (see
 | `saltapp.socket` | K2 contract in `design-fleet/runs/2026-09-17-distribution/LANES.md`, revised 2026-09-18 after a security review, then reduced to an on-demand primitive 2026-09-22 (owner, via team lead: "never polling" applies to a documented fallback too) | `MemoryCursorStore`/`FileCursorStore`, `MemoryDedupeStore`/`FileDedupeStore` (persistent, file-backed by default -- shared with `saltapp.cable`). `SocketClient.drain_once(after=None)`: pages `GET /api/v1/agent/updates` (`timeout=0`) until a page comes back empty, then RETURNS -- no loop, no interval, nothing runs on its own schedule. `Agent.run_socket_async()` doesn't use this at all (see `saltapp.cable`); `CableClient._backfill` calls `drain_once` for its own on-demand catch-up, and a tool-shaped host can call it directly each time it's invoked. |
 | `saltapp.cable` | `salt-agent-sdk/src/socket.ts`'s `createSocketClient`, rewritten onto Action Cable 2026-09-22 (owner, via team lead: "DO NOT USE POLLING as a mechanic EVER: pull on demand, push on address") | `CableClient`: a real websocket to `wss://<host>/cable` (`AgentUpdatesChannel`, api-key handshake header), subscribe/replay/`replay_done`, live dispatch, on-demand backfill (`more: true` only) and a coalesced ack via `GET /api/v1/agent/updates` -- never on an interval. Reconnects with jittered exponential backoff (1s..60s), honours `Retry-After` on a 429 handshake, treats 30s without a `{type:"ping"}` as dead. Deliberately simpler than the TS reference in one place (no strict buffer-then-drain ordering during backfill -- correctness still holds via DedupeStore, see the module's header) and stricter in another (dispatch runs as its own `asyncio.create_task`, not awaited inline, because `ctx.ask()` can block a handler on a reply that can only arrive by this same loop continuing to run -- a primitive the TS SDK doesn't have yet). |
 | `saltapp.agent` | `webhook.ts`'s dispatch logic (mention rule, loop guard, GACM, dedupe) + this SDK's own `ask()`/`approve()` | `Agent`: decorators, dispatch, `run_socket()` (now cable-backed), `asgi_app()`. `MessageContext.encrypted`/`.delivered_because` (open rooms, 2026-09-22); `_handle_message` actually calls `crypto.decrypt()` for an encrypted delivery now -- see the dated note below, this was a real bug. |
+| `saltapp.script_job` | `salt-agent-sdk/src/scriptJob.ts` | `run_script_job`, `SeenStore` protocol, `MemorySeenStore`/`FileSeenStore` (per-key TTL): scheduled work done by code, a model only where one is needed (see "Right tool for the job"). Seconds, where the TypeScript SDK takes milliseconds. |
+| `saltapp.chat_privacy` | `salt-agent-sdk/src/chatPrivacy.ts`, `salt-personal-agent/brain.py` `chat_is_private` | `is_private_chat(chat, speaker_id, my_id)`: who is in a chat, decided from Salt's own chat record. |
 | `saltapp.integrations.fastapi` / `.flask` | New | Thin adapters mounting `Agent` into an app you already have. |
 | `saltapp.integrations._tools` | New | `SaltTools`: the six shared actions (`send_message`/`ask_human`/`request_payment`/`send_invoice`/`post_card`/`get_payment_status`) every framework integration below wraps -- one place the business logic and the `ask_human` HITL primitive live. |
 | `saltapp.integrations.{langchain,crewai,pydantic_ai,agno,adk,openai_agents,smolagents,llamaindex,camel}` | New | Nine framework integrations, each a thin shell over `_tools.SaltTools` -- see "Framework integrations" below. |
@@ -106,6 +108,118 @@ sibling Salt SDK/adapter -- check these before touching `saltapp.agent`,
   rooms -- but a new call site that posts a raw string must go through
   `saltapp.crypto.encrypt()` or `post_plain_message`, never a bare
   `post_message` call with unencrypted text.
+
+## Right tool for the job
+
+Owner's rule (2026-10-13): "use the right tools for the right jobs; don't use
+AI as the hammer for everything when deterministic scripts and tools can
+accommodate just as well." A model is for judgement and language. Fetching a
+page, comparing it with last time, remembering what was already sent and
+deciding whether anything changed are code. Every agent built on this SDK
+follows it. (Same section, same rules, in salt-agent-sdk's `AGENTS.md`.)
+
+### Scheduled work is a script job
+
+A recurring job (a news digest, a price watch) is a script the host's
+scheduler runs (cron, a Grains `wake_me`, an asyncio loop), not a model turn
+that browses. `run_script_job` is the shape:
+
+```python
+result = await run_script_job(
+    sources={"hacker_news": hacker_news, "blog_feed": blog_feed},  # plain functions: fetch + normalise, no model
+    key=lambda item: item["url"],                                   # a stable id
+    seen=FileSeenStore("data/digest-seen.json", ttl_seconds=14 * 24 * 3600),
+    compose=cheap_model,                                            # OPTIONAL: the only place a model may run
+    post=lambda text, fresh: ctx.reply(text),                       # or client.send_message
+)
+# ScriptJobResult(fetched, fresh, posted, failed_sources)
+```
+
+- **Sources** are ordinary functions, async or sync (a sync one runs in a
+  thread). Each runs once per call with a timeout
+  (`source_timeout_seconds`, default 20). A source that raises or hangs lands
+  in `failed_sources`; the others carry on. A synchronous source must set its
+  own network timeouts: `wait_for` abandons a hung thread, it cannot stop it,
+  so the thread outlives the run.
+- **`seen`** drops what was already sent. `MemorySeenStore()` forgets on
+  restart; `FileSeenStore(path)` does not. `seen` is required: construct the
+  store ONCE, outside the job function (a `MemorySeenStore` made inside it
+  dedupes nothing). Marks expire per key (`ttl_seconds`), so an old story can
+  come back on purpose. The file holds your item keys in plaintext. Run one
+  job per seen-file at a time: the lock is per instance/process, not across
+  processes.
+- **`compose` is optional, and runs only when something is new.** A quiet day
+  costs nothing. Use the CHEAPEST model that can write the text (a small model
+  for a digest; the big one is for conversations), give it only the new items,
+  and keep ranking, filtering and deduping in code before it. Without
+  `compose`, a plain "- title / url" list is posted. Return empty only for a
+  transient failure: empty means nothing is marked, so the same items go to
+  the model again next run.
+- **Nothing new: no compose, no post.** Items are marked seen only AFTER
+  `post` succeeds; if `post` or `compose` raises, `run_script_job` raises and
+  nothing is marked, so the next run retries. A `compose` that returns
+  nothing posts nothing and marks nothing.
+- **Re-arm in a `finally`.** `run_script_job` never schedules. If your
+  scheduler needs the next run set each time, set it whether this run
+  succeeded, failed or was skipped (see the spent-budget rule below).
+
+### A computer going quiet (`on_device_session_ended` / `on_device_back`)
+
+If the person's computer stops answering for 15 s in the middle of a device
+session, Salt ends it with `end_reason: "lost_contact"` and tells you with
+`device_session_ended` (`ctx.lost_contact`). If the computer is seen alive
+again within 24 h while the grant is still active, Salt sends ONE `device_back`
+for that session (`ctx.previous_session_id`; `ctx.chat_id` is the person's 1:1,
+or None). `device_back` grants nothing: open a new session to continue.
+(Source of truth: salt-api `docs/DEVICE_PROTOCOL.md`.)
+
+- **Say it once, plainly.** Once per `session_id`, in the chat the work came
+  from (the delivery's own chat is the device lane, which nobody reads), else
+  the person's 1:1: the computer stopped answering, and nothing else was
+  sent. Fixed words, no model: "Ada's MacBook stopped answering while I was
+  using it. I stopped there and nothing else was sent." Dedupe on the session
+  id; deliveries are retried.
+- **Never claim an action landed** unless a device tool returned it. The last
+  command in the old session may or may not have happened.
+- **When it is back, offer; do not resume.** "Ada's MacBook is back. Want me
+  to finish it?" On a yes, open a new session and look at the screen first
+  before assuming the last step landed.
+- Any other `end_reason` is not for this etiquette.
+- The `device_offline` activity kind is the person's own notice (their bell
+  and push); this SDK has no activity or device REST types, so there is
+  nothing to add for it here. `GET /api/v1/devices` rows also carry
+  `offline_since` and `lost_contact: {agent_id, agent_name, ended_at}` for
+  the owner.
+
+### Who is in the chat comes from Salt's chat record
+
+`is_private_chat(chat, speaker_id, my_id)` is true only for an encrypted,
+non-public chat whose members are exactly the speaker and this agent, with no
+observer. Fetch the chat with `client.get_chat(api_key, chat_id)`
+(`GET /api/v1/chats/:id`, returned verbatim) when you need it, and decide privacy-sensitive things (device tools, anything from the
+person's private data) from THAT, every time they matter. Never from a cache,
+a memory service or a roster you built earlier: they can be slow or stale, and
+a slow memory service once switched a person's computer tools off inside
+their own 1:1. Missing fields fail closed (not private), an absent
+`encrypted` flag means encrypted, and an observer, even a silent one, makes it
+not private.
+
+### When your own model budget is spent
+
+If the model you pay for runs out (a spend cap, a quota), the agent does not
+fall silent and does not talk about money:
+
+- Reply with ONE plain pause line: "I'm paused right now and can't answer
+  this yet. I'll pick it up as soon as I can." No budget, cost, tokens or
+  credits to people, ever.
+- At most once per chat per day. Remember the day you said it; later messages
+  that day get nothing, not a loop of apologies.
+- **A skipped run still re-arms.** A scheduled job skipped for budget must
+  set its next run exactly as a successful one does. A skip that forgets to
+  re-arm silently kills the schedule (it happened to AI News). This is also
+  why a script job costs nothing when nothing is new: it can keep running.
+- The SDK has no model wrapper, so none of this is code here; it is the host's
+  responsibility.
 
 ## Deliberate scope decisions (read this before "fixing" a gap)
 

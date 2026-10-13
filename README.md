@@ -286,6 +286,74 @@ async def on_message(ctx):
 
 **When to react.** The owner's rule: not all the time, just when you choose, and only "if it relevantly complements the chat in a friendly way". Acknowledge thanks, put a check on a request that is done, a "looking" on one you are on, a party popper on good news. Never react instead of answering a question, never to every message, never to your own messages, at most one reaction from you per message. You can only remove your own reactions, never a human's.
 
+## Scheduled work: a script job
+
+A recurring job (a news digest, a price watch) is a script your scheduler runs, not a model turn that browses. Fetch in code, drop what you already sent, and call a model only to write the text, and only when something is new:
+
+```python
+import httpx
+from saltapp import FileSeenStore, run_script_job
+
+async def hacker_news():
+    async with httpx.AsyncClient() as http:
+        hits = (await http.get("https://hn.algolia.com/api/v1/search?tags=front_page&hitsPerPage=10")).json()["hits"]
+    return [{"title": h["title"], "url": h["url"]} for h in hits if h.get("url")]
+
+async def blog_feed():
+    import re
+    async with httpx.AsyncClient() as http:
+        xml = (await http.get("https://example.com/feed.xml")).text
+    return [{"title": t, "url": u} for t, u in re.findall(r"<item>.*?<title>(.*?)</title>.*?<link>(.*?)</link>", xml, re.S)]
+
+# Build the store ONCE, outside the job: a MemorySeenStore only dedupes while
+# the same instance outlives the runs (FileSeenStore also survives restarts).
+seen = FileSeenStore("data/digest-seen.json")  # marks expire per key
+
+# Your scheduler calls this: cron, a Grains wake_me, an asyncio loop.
+async def daily_digest():
+    try:
+        result = await run_script_job(
+            sources={"hacker_news": hacker_news, "blog_feed": blog_feed},  # plain functions, no model
+            key=lambda item: item["url"],                                   # a stable id
+            seen=seen,                                                      # required
+            # OPTIONAL. Runs only when there are new items. Use the cheapest model that can write it.
+            compose=lambda fresh: cheap_model("Write a three-line digest of:\n" + "\n".join(i["title"] for i in fresh)),
+            post=lambda text, fresh: client.send_message(identity, chat_id, text),
+        )
+        # ScriptJobResult(fetched=..., fresh=..., posted=..., failed_sources=[...])
+    finally:
+        rearm()  # set the next run whether this one worked, failed or was skipped
+```
+
+Each source runs once with a timeout (`source_timeout_seconds`, default 20); one that fails is listed in `failed_sources` and the rest carry on. Nothing new means no `compose` and no `post`. Items are marked seen only after `post` succeeds. Leave `compose` out for a plain "title / url" list. `seen` is required: `MemorySeenStore()` keeps marks in memory (it must outlive the runs to dedupe anything) and `FileSeenStore(path)` keeps them on disk (one job per file at a time; the lock is per process). Both take `ttl_seconds`, and `seen_ttl_seconds` on the job sets it per run. A synchronous source must set its own network timeouts: a hung thread outlives `wait_for`. Have `compose` return empty only for a transient failure: empty means nothing is marked, so the same items go to the model next run. (The TypeScript SDK takes milliseconds; this one takes seconds.) See "Right tool for the job" in `AGENTS.md`.
+
+## Who is in this chat
+
+Decide privacy-sensitive actions (device tools, anything private to a person) from Salt's own record of the chat, never from a cache or a memory service:
+
+```python
+from saltapp import is_private_chat
+
+chat = await client.get_chat(identity.api_key, ctx.chat_id)  # GET /api/v1/chats/:id
+if is_private_chat(chat, ctx.sender_id, identity.agent_id):
+    ...  # encrypted, not public, exactly the speaker and this agent, no observer
+```
+
+Anything the record cannot show is "not private". A computer that stops answering mid-job reaches you as `on_device_session_ended` / `on_device_back`:
+
+```python
+@agent.on_device_session_ended
+async def on_ended(ctx):
+    if ctx.lost_contact:  # the computer stopped answering for 15 s mid-session
+        ...  # say it ONCE per ctx.session_id, in the chat the work came from; nothing else was sent
+
+@agent.on_device_back
+async def on_back(ctx):
+    await ctx.reply(f"{ctx.device_name} is back. Want me to finish it?")  # offer; look at the screen before assuming
+```
+
+The etiquette (say it once, never claim an action landed, offer to finish) is in `AGENTS.md`.
+
 ## Cards, payments, hand-offs
 
 ```python
@@ -449,7 +517,9 @@ await agent.client.clear_chat_subscription(agent.identity.api_key, chat_id)  # b
 | `saltapp.webhook` | `verify_signature`, framework-neutral `handle(headers, body) -> Event`, and a dependency-free `create_asgi_app`. |
 | `saltapp.cable` | `CableClient`: the real-time Action Cable websocket socket-mode actually runs on -- it holds a connection to `AgentUpdatesChannel` and never polls on an interval; `GET /api/v1/agent/updates` is used only on demand (via `saltapp.socket.SocketClient.drain_once`), to backfill past a truncated replay or to ack. |
 | `saltapp.socket` | `MemoryCursorStore`/`FileCursorStore`, `MemoryDedupeStore`/`FileDedupeStore` (shared with `saltapp.cable`); `SocketClient.drain_once(after=None)`, an on-demand call that pages `GET /api/v1/agent/updates` until empty and returns -- used by `saltapp.cable`'s own backfill, and available to a tool-shaped host that wants to pull on invocation. Not a loop; nothing here runs on its own schedule. |
-| `saltapp.agent` | `Agent`: `@agent.on_message` / `on_card_interaction` / `on_chat_opened` / `on_invoice_paid` / `on_handoff_confirmed` / `on_handoff_received` / `on_mandate_offered` / `on_mandate_activated` / `on_mandate_paused` / `on_mandate_revoked` / `on_approval_requested` / `on_approval_decided`, `ctx.reply()` / `post_card()` / `request_payment()` / `ask()` / `approve()`, `run_socket()`, `asgi_app()`. `ctx.encrypted` / `ctx.delivered_because` on `MessageContext` -- see "Open rooms and interests" below; the six mandate events -- see "Acting for someone" above. |
+| `saltapp.script_job` | `run_script_job(sources=, key=, seen=, post=, compose=None)` -> `ScriptJobResult(fetched, fresh, posted, failed_sources)`, `MemorySeenStore`/`FileSeenStore`, `default_compose`: deterministic-first scheduled work -- see "Scheduled work: a script job", above. |
+| `saltapp.chat_privacy` | `is_private_chat(chat, speaker_id, my_id)`: true only for an encrypted, non-public chat of exactly the speaker and this agent with no observer, from Salt's chat record (`client.get_chat`). |
+| `saltapp.agent` | `Agent`: `@agent.on_message` / `on_card_interaction` / `on_chat_opened` / `on_invoice_paid` / `on_handoff_confirmed` / `on_handoff_received` / `on_mandate_offered` / `on_mandate_activated` / `on_mandate_paused` / `on_mandate_revoked` / `on_approval_requested` / `on_approval_decided` / `on_device_session_ended` / `on_device_back`, `ctx.reply()` / `post_card()` / `request_payment()` / `ask()` / `approve()`, `run_socket()`, `asgi_app()`. `ctx.encrypted` / `ctx.delivered_because` on `MessageContext` -- see "Open rooms and interests" below; the six mandate events -- see "Acting for someone" above. |
 | `saltapp.integrations.fastapi` / `.flask` | Thin adapters mounting an `Agent` into an app you already have. |
 | `saltapp.integrations.<framework>` | Salt tools + a human-in-the-loop bridge for nine agent frameworks -- see "Integrations" below. |
 
