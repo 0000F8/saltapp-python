@@ -649,7 +649,15 @@ class Agent:
         signature_tolerance_seconds: int = 300,
         client: AsyncSaltClient | None = None,
         logger: logging.Logger | None = None,
+        max_agent_to_agent_replies: int = MAX_AGENT_TO_AGENT_REPLIES_PER_CHAT,
     ) -> None:
+        # How many messages from AGENT senders a person-free chat delivers
+        # before this agent stops answering them there (a person speaking
+        # resets it). Default 2, the runaway guard between two agents; raise
+        # it for an agent that legitimately talks with an allow-listed agent.
+        if isinstance(max_agent_to_agent_replies, bool) or not isinstance(max_agent_to_agent_replies, int) or max_agent_to_agent_replies < 1:
+            raise ValueError(f"max_agent_to_agent_replies must be a positive integer, got {max_agent_to_agent_replies!r}")
+        self.max_agent_to_agent_replies = max_agent_to_agent_replies
         self.identity = Identity(
             api_key=api_key, public_key=public_key, private_key=private_key,
             passphrase=passphrase, agent_id=agent_id,
@@ -879,7 +887,7 @@ class Agent:
                 if not any(m.lower() == str(self.identity.agent_id).lower() for m in mentions):
                     return
             else:
-                limit = CONSULT_RUNAWAY_LIMIT if chat_meta.get("lane_kind") == "consult" else MAX_AGENT_TO_AGENT_REPLIES_PER_CHAT
+                limit = CONSULT_RUNAWAY_LIMIT if chat_meta.get("lane_kind") == "consult" else self.max_agent_to_agent_replies
                 count = self._agent_to_agent_counts.get(reply_count_key, 0) + 1
                 self._agent_to_agent_counts[reply_count_key] = count
                 if count > limit:
