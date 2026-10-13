@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+**Hand a whole task to a computer (Salt Device 0.3, `device.task`).** New module `saltapp.device`, parity with salt-agent-sdk's `device/protocol.ts`: the `[[SALT-DEVICE v= id= seq= op= session= re= exp=]]` envelope (`encode_device_message` / `decode_device_message`, same grammar and bytes as TypeScript), `task_command(goal, done_when=None, max_steps=None, timeout_s=None, *, session, seq, id=None, exp=None, now_ms=None)` and `cancel_command(id, *, session, seq, task=False)` builders that refuse what the device would refuse, `parse_task_args`, `parse_progress` and `parse_task_result` (allow-listed with the device's caps, by characters), the `TaskArgs` / `Progress` / `TaskResult` / `TaskStep` / `TaskChecked` dataclasses, and the mirrored constants (`COMMAND_TTL_MS`, `RESULT_CACHE_SIZE`, `MUTATING_OPS`, `DEVICE_COUNT_CLASSES` incl. `task` / `command` / `look`, `TASK_*`, `PROGRESS_*`). Grammar only: a full Python device client is a stated gap (the TypeScript SDK has `createDeviceClient`; @salt keeps its own port). `tests/fixtures/device_envelope_vectors.json` is committed identically in both repos (written by `scripts/generate_device_vectors.cjs` from the compiled TypeScript SDK) and `tests/test_device.py` holds Python to it both ways. `AGENTS.md` and the README say what is and is not here.
+
 ## 0.5.0
 
 **Right tool for the job: four agent patterns from the owner's rule, "use the right tools for the right jobs; don't use AI as the hammer for everything when deterministic scripts and tools can accommodate just as well" (2026-10-13).** The guidance is in `AGENTS.md` ("Right tool for the job"); the README has one short example. Parity with salt-agent-sdk 0.17.0. Not published.

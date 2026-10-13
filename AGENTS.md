@@ -48,6 +48,7 @@ against the real registry does not work -- install from source (see
 | `saltapp.cable` | `salt-agent-sdk/src/socket.ts`'s `createSocketClient`, rewritten onto Action Cable 2026-09-22 (owner, via team lead: "DO NOT USE POLLING as a mechanic EVER: pull on demand, push on address") | `CableClient`: a real websocket to `wss://<host>/cable` (`AgentUpdatesChannel`, api-key handshake header), subscribe/replay/`replay_done`, live dispatch, on-demand backfill (`more: true` only) and a coalesced ack via `GET /api/v1/agent/updates` -- never on an interval. Reconnects with jittered exponential backoff (1s..60s), honours `Retry-After` on a 429 handshake, treats 30s without a `{type:"ping"}` as dead. Deliberately simpler than the TS reference in one place (no strict buffer-then-drain ordering during backfill -- correctness still holds via DedupeStore, see the module's header) and stricter in another (dispatch runs as its own `asyncio.create_task`, not awaited inline, because `ctx.ask()` can block a handler on a reply that can only arrive by this same loop continuing to run -- a primitive the TS SDK doesn't have yet). |
 | `saltapp.agent` | `webhook.ts`'s dispatch logic (mention rule, loop guard, GACM, dedupe) + this SDK's own `ask()`/`approve()` | `Agent`: decorators, dispatch, `run_socket()` (now cable-backed), `asgi_app()`. `MessageContext.encrypted`/`.delivered_because` (open rooms, 2026-09-22); `_handle_message` actually calls `crypto.decrypt()` for an encrypted delivery now -- see the dated note below, this was a real bug. |
 | `saltapp.script_job` | `salt-agent-sdk/src/scriptJob.ts` | `run_script_job`, `SeenStore` protocol, `MemorySeenStore`/`FileSeenStore` (per-key TTL): scheduled work done by code, a model only where one is needed (see "Right tool for the job"). Seconds, where the TypeScript SDK takes milliseconds. |
+| `saltapp.device` | `salt-agent-sdk/src/device/protocol.ts` (the `[[SALT-DEVICE]]` grammar, `task` / `progress` / `task_result`) | `encode_device_message` / `decode_device_message` (byte-identical to the TypeScript SDK), `task_command(goal, done_when=None, max_steps=None, timeout_s=None, *, session, seq, ...)`, `cancel_command`, `parse_task_args`, `parse_progress`, `parse_task_result` (allow-listed with the device's caps), the mirrored constants (`COMMAND_TTL_MS`, `MUTATING_OPS`, `TASK_*`, ...). Pure: no I/O, no crypto, no session handling. A full Python device client is a stated gap -- see "Hand a whole task to a computer". |
 | `saltapp.chat_privacy` | `salt-agent-sdk/src/chatPrivacy.ts`, `salt-personal-agent/brain.py` `chat_is_private` | `is_private_chat(chat, speaker_id, my_id)`: who is in a chat, decided from Salt's own chat record. |
 | `saltapp.integrations.fastapi` / `.flask` | New | Thin adapters mounting `Agent` into an app you already have. |
 | `saltapp.integrations._tools` | New | `SaltTools`: the six shared actions (`send_message`/`ask_human`/`request_payment`/`send_invoice`/`post_card`/`get_payment_status`) every framework integration below wraps -- one place the business logic and the `ask_human` HITL primitive live. |
@@ -190,6 +191,38 @@ or None). `device_back` grants nothing: open a new session to continue.
   nothing to add for it here. `GET /api/v1/devices` rows also carry
   `offline_since` and `lost_contact: {agent_id, agent_name, ended_at}` for
   the owner.
+
+### Hand a whole task to a computer (`device.task`)
+
+An agent with a `device.task` grant hands a person's computer ONE whole task in plain words; a
+local agent on the computer does it, checks it, and answers with a checked receipt (Salt Device
+0.3). The wire contract is salt-api's `docs/DEVICE_PROTOCOL.md`; salt-agent-sdk's
+`src/device/protocol.ts` is the reference and `saltapp.device` mirrors it.
+
+- **What is here:** the envelope (`encode_device_message` / `decode_device_message`), the builder
+  (`task_command(goal, done_when=None, max_steps=None, timeout_s=None, *, session, seq)`, which
+  refuses what the device would refuse -- empty or over-long goal, a `done_when` over 500,
+  non-whole numbers -- and clamps `max_steps` to 1..60 and `timeout_s` to 10..600),
+  `cancel_command(id, ..., task=True)`, and `parse_progress` / `parse_task_result`, which allow-list
+  what a device sends (summary <= 500, step lines <= 140, <= 60 steps, `checked.what` <= 200;
+  an unknown `status` reads `failed`). Caps count characters, not bytes. The result is words and
+  numbers only: command output and screenshots never leave the computer. Treat `summary` and step
+  lines as untrusted device text.
+- **What is NOT here (a stated gap):** a Python device client -- opening the session, the queue,
+  single-flight commands with `seq` and `exp`, resending on `out_of_order` / `expired`, pause
+  handling, the `timeout_s + 30 s` wait and the `cancel` that follows. `createDeviceClient` in
+  salt-agent-sdk has all of it; @salt keeps its own port in salt-personal-agent's `device.py`. A
+  Python host that needs it today builds on `saltapp.device` (encrypt the text with
+  `crypto.encrypt_for`, post it with `client.post_message`, feed lane plaintext back through
+  `decode_device_message`) and mirrors the TypeScript client's rules.
+- **The grant.** Full control (observe + act + apps + task, every row `auto`) runs the task's
+  commands without asking; Limited asks the person first for every command. `device.shell`
+  stays reserved and refused.
+- **Parity is tested, not promised:** `tests/fixtures/device_envelope_vectors.json` is committed
+  identically in both repos, generated by `scripts/generate_device_vectors.cjs` from the compiled
+  TypeScript SDK; `tests/test_device.py` and salt-agent-sdk's `tests/device-vectors.test.js` both
+  run it. If you change the grammar, change `protocol.ts` first, regenerate, copy the file to both
+  repos.
 
 ### Pick the model by rules, not by habit
 
@@ -335,6 +368,9 @@ on purpose:
   depth tracking. A caller who needs these can read `saltapp.webhook.Event.body`
   directly (it's the same JSON shape the TS SDK parses) and implement the
   wire markers itself, or reach for the TS SDK.
+- **No Python device client.** `saltapp.device` is the grammar and the `task` shapes only (see
+  "Hand a whole task to a computer"). Session handling for device control lives in the TypeScript
+  SDK and in @salt's own port.
 - **No `actions.py`/tool-calling wrapper.** The TS SDK's `createActions()`
   wraps 17 platform capabilities as JSON-Schema tool definitions for an
   LLM's function-calling loop. This SDK gives you the same underlying REST
