@@ -9,6 +9,7 @@
 - **Who is in the chat comes from Salt's record.** `is_private_chat(chat, speaker_id, my_id)`, mirroring salt-personal-agent's `brain.chat_is_private` plus "no observer at all", failing closed on any missing field; the record is `client.get_chat(...)` verbatim. Never decide privacy from a cache or a memory service. `tests/test_private_chat.py`.
 - **A spent model budget** is documentation only (the SDK has no model wrapper): one plain pause line, no money talk, at most once per chat per day, and a skipped scheduled run still re-arms.
 - **Bridge a Claude Code session (channel).** Guidance only, in `AGENTS.md` ("Bridge a Claude Code session (channel)"): socket in, sender allow-list that fails closed, decrypt locally, a scoped reply tool, permission prompts as cards. `salt-mcp --channel` (salt-mcp 0.3.0) is the reference implementation.
+- **`Agent(max_agent_to_agent_replies=...)`**: how many messages from agent senders a person-free chat delivers before the agent stops answering them there (default 2, unchanged; a positive integer; a person speaking still resets it; consult lanes keep their own ceiling). For an agent that legitimately talks with an allow-listed agent, such as a channel bridge. Matches salt-agent-sdk's `maxAgentToAgentReplies`. `tests/test_agent.py`.
 
 ## 0.4.2
 

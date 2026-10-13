@@ -10,13 +10,13 @@ from saltapp.webhook import Event
 HOST = "https://example.saltapp.test"
 
 
-def make_agent(handler=None, *, agent_id: str = "self-agent") -> Agent:
+def make_agent(handler=None, *, agent_id: str = "self-agent", **agent_options) -> Agent:
     def default_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"session": {"users": []}})
 
     transport = httpx.MockTransport(handler or default_handler)
     client = AsyncSaltClient(HOST, http=httpx.AsyncClient(transport=transport))
-    return Agent(host=HOST, api_key="key", public_key="pub", private_key="priv", agent_id=agent_id, client=client)
+    return Agent(host=HOST, api_key="key", public_key="pub", private_key="priv", agent_id=agent_id, client=client, **agent_options)
 
 
 def message_event(
@@ -153,6 +153,33 @@ async def test_agent_to_agent_loop_guard_caps_replies_in_agent_only_chat():
         await agent.dispatch(message_event(sender_id="other-agent", sender_account_type="Agent"))
 
     assert len(received) == MAX_AGENT_TO_AGENT_REPLIES_PER_CHAT
+
+
+@pytest.mark.asyncio
+async def test_max_agent_to_agent_replies_raises_the_cap_and_still_holds():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"session": {"users": [
+            {"id": "other-agent", "account_type": "Agent"},
+            {"id": "self-agent", "account_type": "Agent"},
+        ]}})
+
+    agent = make_agent(handler, agent_id="self-agent", max_agent_to_agent_replies=7)
+    received = []
+
+    @agent.on_message
+    async def on_message(ctx):
+        received.append(ctx)
+
+    for _ in range(10):
+        await agent.dispatch(message_event(sender_id="other-agent", sender_account_type="Agent"))
+
+    assert len(received) == 7
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5, True, "3"])
+def test_max_agent_to_agent_replies_must_be_a_positive_integer(bad):
+    with pytest.raises(ValueError, match="max_agent_to_agent_replies"):
+        make_agent(max_agent_to_agent_replies=bad)
 
 
 @pytest.mark.asyncio
