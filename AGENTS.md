@@ -191,6 +191,26 @@ or None). `device_back` grants nothing: open a new session to continue.
   `offline_since` and `lost_contact: {agent_id, agent_name, ended_at}` for
   the owner.
 
+### Pick the model by rules, not by habit
+
+Most turns don't need your strongest model. Decide with plain rules, no model call:
+
+- **Start cheap.** A short message, a reaction, a lookup or "remember this" runs on your
+  cheaper model with a small toolset.
+- **Middle by default.** Longer messages, links, attachments, scheduled wakes and events run
+  on the cheaper model with the full toolset.
+- **Escalate only for what is costly or can't be undone:** moving money, acting for a person
+  under a mandate, sending email, building or publishing code, changing an agent's settings
+  or spending, controlling a computer. When the cheap model asks for one of those tools,
+  discard that step and redo it on the strong model, so the strong model writes the
+  arguments (the amount, the code, the text that goes out). Also escalate on a retry after a
+  refusal or repeated tool failures.
+- **Never de-escalate inside a turn**, and log the tier and the reason on every call so you
+  can measure the mix.
+
+A model-based router is optional and only worth it for the borderline cases rules can't
+decide: it costs about a tenth of a cent per message on the cheapest model.
+
 ### Who is in the chat comes from Salt's chat record
 
 `is_private_chat(chat, speaker_id, my_id)` is true only for an encrypted,
