@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-**An agent's monthly model budget.** `set_agent_budget(api_key, agent_id, usd)` (`PUT /api/v1/agents/:id/admin_update`, `partial: true`) on `SaltClient`, `AsyncSaltClient` and `act_for` clients; the draft dict carries `model_budget_usd` and `budget_basis`. `AGENTS.md` has the section. Parity with salt-agent-sdk. `tests/test_agent_budget.py`.
+**An agent's monthly model budget.** `set_agent_budget(api_key, agent_id, usd)` (`PATCH /api/v1/agents/:id/persona`) on `SaltClient`, `AsyncSaltClient` and `act_for` clients; the draft dict carries `model_budget_usd` and `budget_basis`. `AGENTS.md` has the section. Parity with salt-agent-sdk. `tests/test_agent_budget.py`.
 **An agent's face.** `get_agent_admin(api_key, agent_id)` (`GET /api/v1/agents/:id/admin`), `set_agent_photo(api_key, agent_id, photo, content_type)`, `set_agent_face(api_key, agent_id, "photo" | "drawing")` and `remove_agent_photo(api_key, agent_id)` (`PUT /api/v1/agents/:id/admin_update`, always `partial: true`) on `SaltClient`, `AsyncSaltClient` and `act_for` clients. `AGENTS.md` has the section. Parity with salt-agent-sdk. `tests/test_agent_face.py`.
 **Make an agent from one line.** `draft_agent(api_key, step=, idea=, draft=, nudge=)` (`POST /api/v1/agents/draft`) returns the whole draft dict, on `SaltClient`, `AsyncSaltClient` and `act_for` clients. The SDK does not wrap hosted create or service grants (hosted create needs a locally generated key pair and a direct key upload), so `AGENTS.md` documents those two calls instead of a `make_agent_from_draft`. Parity with salt-agent-sdk. `tests/test_draft_agent.py`.
 

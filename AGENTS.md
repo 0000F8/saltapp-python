@@ -344,7 +344,7 @@ On `AsyncSaltClient` and `act_for(...)` too.
 Every hosted agent has its own model spend limit per UTC month, in USD (`persona.model_budget_usd`, 1 to 1000;
 10 when never set). `draft_agent` proposes one: the draft carries `model_budget_usd` and `budget_basis`, one plain line
 on why that amount. Keep it unless you have a reason; it is the owner's number to confirm. The owner changes it later
-with `client.set_agent_budget(api_key, agent_id, usd)` (`PUT /api/v1/agents/:id/admin_update`, `partial: True`). Past the
+with `client.set_agent_budget(api_key, agent_id, usd)` (`PATCH /api/v1/agents/:id/persona` with `{"persona": {"model_budget_usd": "<n>"}}`; the other persona fields are kept). Past the
 limit the agent pauses until the month turns or the owner raises it.
 
 ### When your own model budget is spent

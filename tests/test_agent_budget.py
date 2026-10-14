@@ -1,4 +1,4 @@
-# An agent's monthly model budget: the draft proposes it, the owner sets it (PUT admin_update, partial).
+# An agent's monthly model budget: the draft proposes it, the owner sets it (PATCH persona).
 # Mirrors salt-agent-sdk's tests/agent-budget.test.js.
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from saltapp import SaltApiError
 from saltapp.client import AsyncSaltClient, SaltClient
 
 HOST = "https://example.saltapp.test"
-URL = f"{HOST}/api/v1/agents/a1/admin_update"
+URL = f"{HOST}/api/v1/agents/a1/persona"
 
 
 def make_sync(handler) -> SaltClient:
@@ -40,16 +40,16 @@ def test_draft_agent_returns_the_budget_fields():
     assert result["budget_basis"] == "About three posts a day on a small model."
 
 
-def test_set_agent_budget_sends_a_partial_update():
+def test_set_agent_budget_patches_the_persona_with_a_string():
     calls, handler = recorder()
     client = make_sync(handler)
     client.set_agent_budget("k", "a1", 25)
     client.set_agent_budget("k", "a1", "7")
-    assert calls[0].method == "PUT"
+    assert calls[0].method == "PATCH"
     assert str(calls[0].url) == URL
     assert calls[0].headers["api-key"] == "k"
-    assert json.loads(calls[0].content) == {"partial": True, "model_budget_usd": 25}
-    assert json.loads(calls[1].content) == {"partial": True, "model_budget_usd": "7"}
+    assert json.loads(calls[0].content) == {"persona": {"model_budget_usd": "25"}}
+    assert json.loads(calls[1].content) == {"persona": {"model_budget_usd": "7"}}
 
 
 def test_a_refusal_raises_with_the_sentence():
@@ -71,4 +71,4 @@ async def test_async_set_agent_budget():
     calls, handler = recorder()
     await make_async(handler).set_agent_budget("k", "a1", 10)
     assert str(calls[0].url) == URL
-    assert json.loads(calls[0].content) == {"partial": True, "model_budget_usd": 10}
+    assert json.loads(calls[0].content) == {"persona": {"model_budget_usd": "10"}}

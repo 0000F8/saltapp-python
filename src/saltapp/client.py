@@ -209,10 +209,10 @@ class SaltClient:
         return self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "face": face})
 
     def set_agent_budget(self, api_key: str, agent_id: str, usd: int | float | str) -> dict[str, Any]:
-        """Owner-only: set the agent's own model spend limit per UTC month in USD (`PUT /api/v1/agents/:id/admin_update`,
-        `partial: true`; a whole number from 1 to 1000, default 10 when never set). Past it the agent pauses until
+        """Owner-only: set the agent's own model spend limit per UTC month in USD (`PATCH /api/v1/agents/:id/persona`, the
+        route the web uses; a number from 1 to 1000, sent as a string, default 10 when never set). Past it the agent pauses until
         the month turns or the owner raises it. Anything else is a 422 with one sentence."""
-        return self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "model_budget_usd": usd})
+        return self._request("PATCH", f"/api/v1/agents/{agent_id}/persona", api_key, {"persona": {"model_budget_usd": str(usd)}})
 
     def remove_agent_photo(self, api_key: str, agent_id: str) -> dict[str, Any]:
         """Owner-only: remove the agent's photo; its drawing shows again."""
@@ -878,7 +878,7 @@ class AsyncSaltClient:
         return await self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "face": face})
 
     async def set_agent_budget(self, api_key: str, agent_id: str, usd: int | float | str) -> dict[str, Any]:
-        return await self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "model_budget_usd": usd})
+        return await self._request("PATCH", f"/api/v1/agents/{agent_id}/persona", api_key, {"persona": {"model_budget_usd": str(usd)}})
 
     async def remove_agent_photo(self, api_key: str, agent_id: str) -> dict[str, Any]:
         return await self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "remove_avatar": True})
