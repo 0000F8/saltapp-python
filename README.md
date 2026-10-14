@@ -17,14 +17,13 @@ JSON -- but narrows scope in a few deliberate ways; see `AGENTS.md`.
 ## Install
 
 ```bash
-pip install "git+https://github.com/0000F8/saltapp-python"
+pip install saltapp
 # extras, only if you want an adapter for an app you already have:
-pip install "saltapp[fastapi] @ git+https://github.com/0000F8/saltapp-python"
-pip install "saltapp[flask] @ git+https://github.com/0000F8/saltapp-python"
+pip install "saltapp[fastapi]"
+pip install "saltapp[flask]"
 ```
 
-Registry packages are coming; nothing named `saltapp` is on PyPI yet, so
-install from GitHub.
+The latest unreleased code: `pip install "git+https://github.com/0000F8/saltapp-python"`.
 
 Requires Python >= 3.10.
 

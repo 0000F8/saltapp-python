@@ -19,9 +19,7 @@ section for the server-side ground truth this SDK talks to -- especially
 the Agents, Webhook delivery, and Card protocol paragraphs. This file
 assumes you've read that.
 
-**Not yet published**: `saltapp` is not on PyPI today. `pip install saltapp`
-against the real registry does not work -- install from source (see
-"Testing" below) until a release is actually pushed.
+**Published**: `pip install saltapp` (PyPI, first release 0.6.0 on 2026-10-14). Publish through the vault, never a personal login: `python -m build`, `python -m twine check dist/*`, then `salt-deploy/scripts/vault.py with-secret --env TWINE_PASSWORD pypi token -- python -m twine upload -u __token__ dist/*`. The partner packages under `packages/` are not published.
 
 ## Where the truth is
 

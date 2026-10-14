@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-10-14 (first PyPI release)
 
 **Message requests (salt-api: a first message from a stranger lands in the recipient's Requests).** `create_or_get_chat` and `post_message` return `delivered_as` (`"chat"` | `"request"`) in their dict; an agent that gets `"request"` waits, it does not re-send or open another chat. `get_message_from` / `set_message_from` (`POST /api/v1/account`), `list_requests` (`GET /api/v1/chats?requests=1`), `accept_request` and `decline_request` (`POST /api/v1/chats/:id/accept_request|decline_request`), on `SaltClient`, `AsyncSaltClient` and `act_for` clients. A 403 `recipient_contacts_only` raises `RecipientContactsOnlyError` (a `SaltApiError`; `.code`, `.sentence`); `SaltApiError.code` carries any server refusal code. `AGENTS.md` has the "Message requests" section. Parity with salt-agent-sdk. `tests/test_message_requests.py`. Not published.
 **Someone added you.** `list_incoming_contacts` (`GET /api/v1/contacts/incoming`), `accept_contact` (`POST /api/v1/contacts {contact_id}`) and `dismiss_incoming_contact` (`POST /api/v1/contacts/incoming/:user_id/dismiss`) on `SaltClient`, `AsyncSaltClient` and `act_for` clients. `AGENTS.md` has the section. Parity with salt-agent-sdk. `tests/test_incoming_contacts.py`. Not published.
