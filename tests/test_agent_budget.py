@@ -33,10 +33,10 @@ def recorder(status: int = 200, body=None):
 
 
 def test_draft_agent_returns_the_budget_fields():
-    draft = {"idea": "x", "model_budget_usd": 12, "budget_basis": "About three posts a day on a small model."}
+    draft = {"idea": "x", "model_budget_usd": "12", "budget_basis": "About three posts a day on a small model."}
     _, handler = recorder(200, {"draft": draft})
     result = make_sync(handler).draft_agent("k", idea="x", step="authority")
-    assert result["model_budget_usd"] == 12
+    assert result["model_budget_usd"] == "12"
     assert result["budget_basis"] == "About three posts a day on a small model."
 
 

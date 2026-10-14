@@ -170,7 +170,8 @@ class SaltClient:
         """Draft an agent from one line (`POST /api/v1/agents/draft`): a person's token or an agent's own api-key.
         `step` is "brief" (name, handle, bio, brief, assumptions), "personality" (voice, first_message) or
         "authority" (skills, services, budget_per_day, actions_estimate, model_budget_usd, budget_basis -- the monthly
-        model spend in USD and one plain line on why that amount). Returns the WHOLE draft; a step rewrites
+        model spend in USD as a decimal string of whole dollars, None until "authority" has run, and a short sentence
+        on what it is sized from). Returns the WHOLE draft; a step rewrites
         only its own fields and keeps the rest exactly as sent, so pass the person's edited `draft` back in.
         `idea` (<= 500 characters) is required on the first call; `nudge` (<= 120, "More playful") steers a rewrite.
         Nothing is created: the AI proposes, the caller confirms. The brief is PRIVATE, the bio PUBLIC. A model
@@ -187,7 +188,8 @@ class SaltClient:
 
     def get_agent_admin(self, api_key: str, agent_id: str) -> dict[str, Any]:
         """Owner-only agent admin record (`GET /api/v1/agents/:id/admin`): the agent's settings plus `avatar_url`,
-        `face` ("photo" | "drawing" | None) and `face_set_by` ("owner" | "agent" | None). `apikey` is metadata (hint,
+        `face` ("photo" | "drawing" | None), `face_set_by` ("owner" | "agent" | None) and, for a hosted agent,
+        `model_budget_usd` (a decimal string, "10" when never set) and `model_usage`. `apikey` is metadata (hint,
         last-used) -- the raw key rides only on `create_agent`'s response, and after that only `rotate_api_key`
         can produce a usable value; `userkeys` never carries a usable key either."""
         return self._request("GET", f"/api/v1/agents/{agent_id}/admin", api_key)
