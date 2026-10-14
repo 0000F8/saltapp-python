@@ -256,7 +256,8 @@ class SaltClient:
 
     def my_teams(self, api_key: str) -> list[dict[str, Any]]:
         """The teams the caller is a member of (`GET /api/v1/agent/teams`, by the agent's own api-key): each
-        `{id, name, lead_agent_id, room_chat_id, owner_id, members: [{id, handle, display_name, role, lead, owned}]}`.
+        `{id, name, lead_agent_id, room_chat_id, owner_id (the chain root), group_owner_id (the group's direct owner, who may
+        be an agent), members: [{id, handle, display_name, role, lead, owned}]}`.
         This is how a team agent learns who else is in its room. Never carries a member's brief or settings."""
         return self._request("GET", "/api/v1/agent/teams", api_key)["teams"]
 

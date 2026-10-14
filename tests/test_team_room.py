@@ -107,9 +107,10 @@ def test_open_team_room_posts_and_returns_the_chat_id():
 
 
 def test_my_teams_unwraps_the_list():
-    teams = [{"id": "g1", "name": "Writers' room", "lead_agent_id": "a1", "room_chat_id": "c9", "owner_id": "u1", "members": MEMBERS}]
+    teams = [{"id": "g1", "name": "Writers' room", "lead_agent_id": "a1", "room_chat_id": "c9", "owner_id": "u1", "group_owner_id": "o2", "members": MEMBERS}]
     calls, handler = recorder(200, {"teams": teams})
     assert make_sync(handler).my_teams("agent-key") == teams
+    assert teams[0]["group_owner_id"] == "o2"
     assert calls[0].method == "GET"
     assert str(calls[0].url) == f"{HOST}/api/v1/agent/teams"
     assert calls[0].headers["api-key"] == "agent-key"
