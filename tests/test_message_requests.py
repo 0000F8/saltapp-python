@@ -83,6 +83,21 @@ def test_list_requests_asks_for_requests():
     assert str(calls[0].url) == f"{HOST}/api/v1/chats?requests=1"
 
 
+def test_list_then_accept_uses_the_session_id():
+    rows = [{"session": {"id": "c5", "request_state": "pending"}, "recent_message": {}}]
+    calls: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, json=rows if request.url.query else {"session": {"id": "c5"}})
+
+    client = make_sync(handler)
+    row = client.list_requests("k")[0]
+    assert "id" not in row
+    client.accept_request("k", row["session"]["id"])
+    assert str(calls[1].url) == f"{HOST}/api/v1/chats/c5/accept_request"
+
+
 def test_accept_request_posts_and_returns_the_chat():
     calls, handler = recorder(200, {"id": "c5"})
     assert make_sync(handler).accept_request("k", "c5")["id"] == "c5"

@@ -344,7 +344,8 @@ class SaltClient:
 
     def list_requests(self, api_key: str) -> list[dict[str, Any]]:
         """Message requests waiting on you: 1:1 chats strangers started that you
-        have not accepted. Same shape as the chat list; ordinary chats are not in it."""
+        have not accepted. Rows are chat-list rows, `{"session": {...}, "recent_message": {...}}`: there is
+        no top-level `id`, the chat id is `row["session"]["id"]`. Ordinary chats are not in it."""
         return self._request("GET", "/api/v1/chats?requests=1", api_key)
 
     def accept_request(self, api_key: str, chat_id: str) -> dict[str, Any]:
