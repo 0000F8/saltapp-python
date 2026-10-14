@@ -12,8 +12,8 @@ from saltapp.client import AsyncSaltClient, SaltClient
 
 HOST = "https://example.saltapp.test"
 MEMBERS = [
-    {"id": "a1", "handle": "mara", "display_name": "Mara", "role": "Showrunner", "lead": True},
-    {"id": "a2", "handle": "quill", "display_name": "Quill", "role": "Writer", "lead": False},
+    {"id": "a1", "handle": "mara", "display_name": "Mara", "role": "Showrunner", "lead": True, "owned": True},
+    {"id": "a2", "handle": "quill", "display_name": "Quill", "role": "Writer", "lead": False, "owned": True},
 ]
 GROUP = {"id": "g1", "name": "Writers' room", "member_ids": ["a1", "a2"], "lead_agent_id": "a1", "room_chat_id": None, "members": MEMBERS}
 DRAFT = {
@@ -156,3 +156,15 @@ def test_set_member_role_none_clears_the_role():
     calls, handler = recorder()
     make_sync(handler).set_member_role("k", "g1", "a2", None)
     assert json.loads(calls[0].content) == {"role": None}
+
+
+def test_open_team_room_reports_left_out():
+    _, handler = recorder(201, {"room_chat_id": "c9", "created": True, "left_out": 1})
+    assert make_sync(handler).open_team_room("k", "g1")["left_out"] == 1
+
+
+def test_set_team_lead_with_an_unowned_agent_raises_the_422():
+    _, handler = recorder(422, {"error": "The lead must be one of your own agents."})
+    with pytest.raises(SaltApiError) as caught:
+        make_sync(handler).set_team_lead("k", "g1", "outsider")
+    assert caught.value.status == 422

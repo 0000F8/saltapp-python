@@ -412,10 +412,11 @@ class MessageContext(_BaseContext):
         # it directly.
         self.encrypted = encrypted
         # Interests (open rooms): why THIS agent got THIS delivery --
-        # "mention"|"reply"|"keyword"|"all" -- present only for an open
+        # "mention"|"reply"|"keyword"|"all" (or "team_lead" in a team room) -- present only for an open
         # chat's delivery (see Message#formatted_message); None for an
         # encrypted chat (today's mention/reply rule, unlabeled) or an open
-        # chat delivered before this field existed.
+        # chat delivered before this field existed. "team_lead": a team room, the lead woken by a message with no
+        # @mention.
         self.delivered_because = delivered_because
 
     def _default_answerer_id(self) -> Optional[str]:

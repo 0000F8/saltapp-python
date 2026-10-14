@@ -241,7 +241,7 @@ class SaltClient:
 
     def set_team_lead(self, api_key: str, group_id: str, lead_agent_id: str | None) -> dict[str, Any]:
         """Owner-only: make one member the team's lead (the arbiter of its room), or None for no lead. The lead
-        must be a member (422). Returns the group with `members` `[{id, handle, display_name, role, lead}]`."""
+        must be a member you own (422). Returns the group with `members` `[{id, handle, display_name, role, lead, owned}]`."""
         return self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"lead_agent_id": lead_agent_id})
 
     def set_member_role(self, api_key: str, group_id: str, agent_id: str, role: str | None) -> dict[str, Any]:
@@ -250,12 +250,13 @@ class SaltClient:
 
     def open_team_room(self, api_key: str, group_id: str) -> dict[str, Any]:
         """Owner-only: make (or return) the team's room, one encrypted group chat with you and every member.
-        Idempotent. Returns `{room_chat_id, created}`."""
+        Idempotent. Returns `{room_chat_id, created}`, plus `left_out` (a count) only when positive: members the
+        owner does not own are not added to the room."""
         return self._request("POST", f"/api/v1/agent_groups/{group_id}/room", api_key, {})
 
     def my_teams(self, api_key: str) -> list[dict[str, Any]]:
         """The teams the caller is a member of (`GET /api/v1/agent/teams`, by the agent's own api-key): each
-        `{id, name, lead_agent_id, room_chat_id, owner_id, members: [{id, handle, display_name, role, lead}]}`.
+        `{id, name, lead_agent_id, room_chat_id, owner_id, members: [{id, handle, display_name, role, lead, owned}]}`.
         This is how a team agent learns who else is in its room. Never carries a member's brief or settings."""
         return self._request("GET", "/api/v1/agent/teams", api_key)["teams"]
 
