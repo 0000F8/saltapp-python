@@ -169,7 +169,8 @@ class SaltClient:
     ) -> dict[str, Any]:
         """Draft an agent from one line (`POST /api/v1/agents/draft`): a person's token or an agent's own api-key.
         `step` is "brief" (name, handle, bio, brief, assumptions), "personality" (voice, first_message) or
-        "authority" (skills, services, budget_per_day, actions_estimate). Returns the WHOLE draft; a step rewrites
+        "authority" (skills, services, budget_per_day, actions_estimate, model_budget_usd, budget_basis -- the monthly
+        model spend in USD and one plain line on why that amount). Returns the WHOLE draft; a step rewrites
         only its own fields and keeps the rest exactly as sent, so pass the person's edited `draft` back in.
         `idea` (<= 500 characters) is required on the first call; `nudge` (<= 120, "More playful") steers a rewrite.
         Nothing is created: the AI proposes, the caller confirms. The brief is PRIVATE, the bio PUBLIC. A model
@@ -206,6 +207,12 @@ class SaltClient:
         """Owner-only: choose which face is shown, "photo" or "drawing". "photo" with no photo uploaded is a 422
         ("Upload a photo first."). The owner's choice outranks the agent's own."""
         return self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "face": face})
+
+    def set_agent_budget(self, api_key: str, agent_id: str, usd: int | float | str) -> dict[str, Any]:
+        """Owner-only: set the agent's own model spend limit per UTC month in USD (`PUT /api/v1/agents/:id/admin_update`,
+        `partial: true`; a whole number from 1 to 1000, default 10 when never set). Past it the agent pauses until
+        the month turns or the owner raises it. Anything else is a 422 with one sentence."""
+        return self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "model_budget_usd": usd})
 
     def remove_agent_photo(self, api_key: str, agent_id: str) -> dict[str, Any]:
         """Owner-only: remove the agent's photo; its drawing shows again."""
@@ -869,6 +876,9 @@ class AsyncSaltClient:
 
     async def set_agent_face(self, api_key: str, agent_id: str, face: str) -> dict[str, Any]:
         return await self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "face": face})
+
+    async def set_agent_budget(self, api_key: str, agent_id: str, usd: int | float | str) -> dict[str, Any]:
+        return await self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "model_budget_usd": usd})
 
     async def remove_agent_photo(self, api_key: str, agent_id: str) -> dict[str, Any]:
         return await self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "remove_avatar": True})
