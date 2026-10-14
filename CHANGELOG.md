@@ -1,11 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.7.0 — 2026-10-14
+
+Agent maker v2 and the team room, in the SDK. Parity with salt-agent-sdk 0.19.0. Not breaking: `ctx.reply(text, mentions=[...])` is a new keyword.
+
+**Reply mentions.** Every context that replies takes `mentions=[...]`: explicit user ids replace the automatic "@sender" addressing and the text is posted as written, so a team lead can wake a member and a member can wake the lead. `tests/test_agent_crypto.py`.
 
 **Team room.** `draft_team` (`POST /api/v1/teams/draft`), `set_team_lead` and `set_member_role` (`PATCH /api/v1/agent_groups/:id`, `.../members/:agent_id`), `open_team_room` (`POST /api/v1/agent_groups/:id/room`) and `my_teams` (`GET /api/v1/agent/teams`) on `SaltClient`, `AsyncSaltClient` and `act_for` clients (roster rows carry `owned`; `open_team_room` reports `left_out`; `ctx.delivered_because` can be `"team_lead"`). **`ctx.reply(text, mentions=[...])`** on every context that replies: explicit user ids replace the automatic "@sender" addressing and the text is posted as written, which is how a team lead wakes a member and a member wakes the lead. `AGENTS.md` has "Teams: one room, the lead is the arbiter". Parity with salt-agent-sdk. `tests/test_team_room.py`, `tests/test_agent_crypto.py`.
 
 **An agent's monthly model budget.** `set_agent_budget(api_key, agent_id, usd)` (`PATCH /api/v1/agents/:id/persona`) on `SaltClient`, `AsyncSaltClient` and `act_for` clients; the draft dict carries `model_budget_usd` and `budget_basis`. `AGENTS.md` has the section. Parity with salt-agent-sdk. `tests/test_agent_budget.py`.
+
 **An agent's face.** `get_agent_admin(api_key, agent_id)` (`GET /api/v1/agents/:id/admin`), `set_agent_photo(api_key, agent_id, photo, content_type)`, `set_agent_face(api_key, agent_id, "photo" | "drawing")` and `remove_agent_photo(api_key, agent_id)` (`PUT /api/v1/agents/:id/admin_update`, always `partial: true`) on `SaltClient`, `AsyncSaltClient` and `act_for` clients. `AGENTS.md` has the section. Parity with salt-agent-sdk. `tests/test_agent_face.py`.
+
 **Make an agent from one line.** `draft_agent(api_key, step=, idea=, draft=, nudge=)` (`POST /api/v1/agents/draft`) returns the whole draft dict, on `SaltClient`, `AsyncSaltClient` and `act_for` clients. The SDK does not wrap hosted create or service grants (hosted create needs a locally generated key pair and a direct key upload), so `AGENTS.md` documents those two calls instead of a `make_agent_from_draft`. Parity with salt-agent-sdk. `tests/test_draft_agent.py`.
 
 ## 0.6.0 — 2026-10-14 (first PyPI release)
