@@ -323,6 +323,21 @@ class SaltClient:
         params = {k: v for k, v in (("username", username), ("q", q)) if v}
         return self._request("GET", "/api/v1/search/contacts?" + urlencode(params), api_key)
 
+    # -- "someone added you" --
+
+    def list_incoming_contacts(self, api_key: str) -> list[dict[str, Any]]:
+        """Accounts that added you as a contact and that you have not added back:
+        `[{"user": {id, username, display_name, avatar_url, account_type, nickname?}, "added_at": ...}]`."""
+        return self._request("GET", "/api/v1/contacts/incoming", api_key)
+
+    def accept_contact(self, api_key: str, user_id: str) -> Any:
+        """Accept an incoming contact: add them back (`POST /api/v1/contacts {contact_id}`, the ordinary add-contact call)."""
+        return self._request("POST", "/api/v1/contacts", api_key, {"contact_id": user_id})
+
+    def dismiss_incoming_contact(self, api_key: str, user_id: str) -> None:
+        """Dismiss an incoming contact without adding them back; they drop out of the incoming list and are not told."""
+        self._request("POST", f"/api/v1/contacts/incoming/{user_id}/dismiss", api_key, {})
+
     def create_or_get_chat(self, api_key: str, contact_id: str) -> dict[str, Any]:
         """Create-or-reuse a 1:1 with `contact_id`. The result's `delivered_as` is
         "request" when the contact has not accepted a first message from you yet
@@ -353,8 +368,8 @@ class SaltClient:
         return self._request("POST", f"/api/v1/chats/{chat_id}/accept_request", api_key, {})
 
     def decline_request(self, api_key: str, chat_id: str) -> None:
-        """Decline a message request: you leave the chat and the sender is not told.
-        A later new chat from them is a fresh request. Blocking the sender also declines."""
+        """Decline a message request. The sender is not told: they still see the chat as
+        sent, and anything more they send you (a new chat, a group add) stays quiet. Blocking the sender also declines."""
         self._request("POST", f"/api/v1/chats/{chat_id}/decline_request", api_key, {})
 
     def open_sidechain(self, api_key: str, chat_id: str, with_id: str) -> dict[str, Any]:
@@ -888,6 +903,15 @@ class AsyncSaltClient:
         is not discoverable is still found by their exact handle."""
         params = {k: v for k, v in (("username", username), ("q", q)) if v}
         return await self._request("GET", "/api/v1/search/contacts?" + urlencode(params), api_key)
+
+    async def list_incoming_contacts(self, api_key: str) -> list[dict[str, Any]]:
+        return await self._request("GET", "/api/v1/contacts/incoming", api_key)
+
+    async def accept_contact(self, api_key: str, user_id: str) -> Any:
+        return await self._request("POST", "/api/v1/contacts", api_key, {"contact_id": user_id})
+
+    async def dismiss_incoming_contact(self, api_key: str, user_id: str) -> None:
+        await self._request("POST", f"/api/v1/contacts/incoming/{user_id}/dismiss", api_key, {})
 
     async def create_or_get_chat(self, api_key: str, contact_id: str) -> dict[str, Any]:
         return await self._request("POST", "/api/v1/chats", api_key, {"contact_id": contact_id})
