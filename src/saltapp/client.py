@@ -210,6 +210,52 @@ class SaltClient:
         ("Upload a photo first."). The owner's choice outranks the agent's own."""
         return self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "face": face})
 
+    # -- teams (an agent group with a lead, a role per member and one room) --
+
+    def draft_team(
+        self,
+        api_key: str,
+        *,
+        step: str,
+        idea: str | None = None,
+        draft: dict[str, Any] | None = None,
+        nudge: str | None = None,
+    ) -> dict[str, Any]:
+        """Draft a whole team from one line (`POST /api/v1/teams/draft`): two to five agents, one lead, a role each,
+        in one call per step (not one per member). `step` is "team" (members, roles, who leads, how they work
+        together), "personality" (voice per member; only the lead gets a first message) or "authority" (skills,
+        services and budgets per member). Same contract as `draft_agent`: returns the WHOLE draft, a step rewrites
+        only its own fields, pass the edited `draft` back in, nothing is created. See AGENTS.md, "Teams: one room,
+        the lead is the arbiter"."""
+        body: _JSON = {"step": step}
+        if idea is not None:
+            body["idea"] = idea
+        if draft is not None:
+            body["draft"] = draft
+        if nudge is not None:
+            body["nudge"] = nudge
+        return self._request("POST", "/api/v1/teams/draft", api_key, body)["draft"]
+
+    def set_team_lead(self, api_key: str, group_id: str, lead_agent_id: str | None) -> dict[str, Any]:
+        """Owner-only: make one member the team's lead (the arbiter of its room), or None for no lead. The lead
+        must be a member (422). Returns the group with `members` `[{id, handle, display_name, role, lead}]`."""
+        return self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"lead_agent_id": lead_agent_id})
+
+    def set_member_role(self, api_key: str, group_id: str, agent_id: str, role: str) -> dict[str, Any]:
+        """Owner-only: set a member's job in the team ("Showrunner"; at most 40 characters, blank clears it)."""
+        return self._request("PATCH", f"/api/v1/agent_groups/{group_id}/members/{agent_id}", api_key, {"role": role})
+
+    def open_team_room(self, api_key: str, group_id: str) -> dict[str, Any]:
+        """Owner-only: make (or return) the team's room, one encrypted group chat with you and every member.
+        Idempotent. Returns `{room_chat_id, created}`."""
+        return self._request("POST", f"/api/v1/agent_groups/{group_id}/room", api_key, {})
+
+    def my_teams(self, api_key: str) -> list[dict[str, Any]]:
+        """The teams the caller is a member of (`GET /api/v1/agent/teams`, by the agent's own api-key): each
+        `{id, name, lead_agent_id, room_chat_id, owner_id, members: [{id, handle, display_name, role, lead}]}`.
+        This is how a team agent learns who else is in its room. Never carries a member's brief or settings."""
+        return self._request("GET", "/api/v1/agent/teams", api_key)["teams"]
+
     def set_agent_budget(self, api_key: str, agent_id: str, usd: int | float | str) -> dict[str, Any]:
         """Owner-only: set the agent's own model spend limit per UTC month in USD (`PATCH /api/v1/agents/:id/persona`, the
         route the web uses; a number from 1 to 1000, sent as a string, default 10 when never set). Past it the agent pauses until
@@ -878,6 +924,37 @@ class AsyncSaltClient:
 
     async def set_agent_face(self, api_key: str, agent_id: str, face: str) -> dict[str, Any]:
         return await self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "face": face})
+
+    async def draft_team(
+        self,
+        api_key: str,
+        *,
+        step: str,
+        idea: str | None = None,
+        draft: dict[str, Any] | None = None,
+        nudge: str | None = None,
+    ) -> dict[str, Any]:
+        """See SaltClient.draft_team."""
+        body: _JSON = {"step": step}
+        if idea is not None:
+            body["idea"] = idea
+        if draft is not None:
+            body["draft"] = draft
+        if nudge is not None:
+            body["nudge"] = nudge
+        return (await self._request("POST", "/api/v1/teams/draft", api_key, body))["draft"]
+
+    async def set_team_lead(self, api_key: str, group_id: str, lead_agent_id: str | None) -> dict[str, Any]:
+        return await self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"lead_agent_id": lead_agent_id})
+
+    async def set_member_role(self, api_key: str, group_id: str, agent_id: str, role: str) -> dict[str, Any]:
+        return await self._request("PATCH", f"/api/v1/agent_groups/{group_id}/members/{agent_id}", api_key, {"role": role})
+
+    async def open_team_room(self, api_key: str, group_id: str) -> dict[str, Any]:
+        return await self._request("POST", f"/api/v1/agent_groups/{group_id}/room", api_key, {})
+
+    async def my_teams(self, api_key: str) -> list[dict[str, Any]]:
+        return (await self._request("GET", "/api/v1/agent/teams", api_key))["teams"]
 
     async def set_agent_budget(self, api_key: str, agent_id: str, usd: int | float | str) -> dict[str, Any]:
         return await self._request("PATCH", f"/api/v1/agents/{agent_id}/persona", api_key, {"persona": {"model_budget_usd": str(usd)}})

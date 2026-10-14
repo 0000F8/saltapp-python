@@ -442,7 +442,19 @@ class MessageContext(_BaseContext):
             raise ValueError("this message has no message_id to react to")
         return await self.agent.client.react(self.agent.identity.api_key, self.message_id, emoji)
 
-    async def reply(self, text: str) -> None:
+    async def reply(self, text: str, *, mentions: Optional[list[str]] = None) -> None:
+        """Post `text` into the chat. `mentions` (user ids) are who this reply @-mentions -- Salt only sees
+        ciphertext, so an "@handle" in the body notifies nobody by itself; the ids are what wake an agent in a
+        group. When given they replace the automatic "@sender" addressing and the text is posted as written, so
+        write the "@handle" yourself (a team lead waking a member, a member waking the lead)."""
+        if mentions:
+            if self.encrypted:
+                await self.agent.client.send_message(self.agent.identity, self.chat_id, text, mentions=list(mentions))
+            else:
+                await self.agent.client.post_plain_message(
+                    self.agent.identity.api_key, self.chat_id, text, mentions=list(mentions)
+                )
+            return
         addressee = self.sender if self.sender.get("account_type") != "Agent" else None
         mentions = [self.sender_id] if addressee and addressee.get("username") else None
         outgoing = text
@@ -490,8 +502,8 @@ class ChatOpenedContext(_BaseContext):
             return None
         return self.opened_by.get("id")
 
-    async def reply(self, text: str) -> None:
-        await self.agent.client.send_message(self.agent.identity, self.chat_id, text)
+    async def reply(self, text: str, *, mentions: Optional[list[str]] = None) -> None:
+        await self.agent.client.send_message(self.agent.identity, self.chat_id, text, mentions=mentions)
 
 
 class InvoicePaidContext(_BaseContext):
@@ -511,8 +523,8 @@ class InvoicePaidContext(_BaseContext):
             return None
         return self.buyer.get("id")
 
-    async def reply(self, text: str) -> None:
-        await self.agent.client.send_message(self.agent.identity, self.chat_id, text)
+    async def reply(self, text: str, *, mentions: Optional[list[str]] = None) -> None:
+        await self.agent.client.send_message(self.agent.identity, self.chat_id, text, mentions=mentions)
 
 
 class MandateOfferedContext:
@@ -620,12 +632,12 @@ class DeviceBackContext:
         self.back_at: Optional[str] = body.get("back_at")
         self.chat_id: Optional[str] = body.get("chat_id")
 
-    async def reply(self, text: str) -> None:
+    async def reply(self, text: str, *, mentions: Optional[list[str]] = None) -> None:
         """Encrypts `text` for the 1:1's members and posts it. Raises
         `SaltAppError` when `chat_id` is None."""
         if not self.chat_id:
             raise SaltAppError("device_back: the person has no 1:1 with this agent (chat_id is None), so there is nowhere to reply")
-        await self.agent.client.send_message(self.agent.identity, self.chat_id, text)
+        await self.agent.client.send_message(self.agent.identity, self.chat_id, text, mentions=mentions)
 
 
 Handler = Callable[[Any], Awaitable[None]]

@@ -227,3 +227,53 @@ async def test_reply_in_encrypted_room_still_encrypts(keypair_a):
     assert posted["body"]["message"] != "hello back"
     assert posted["body"]["message"].startswith("-----BEGIN PGP MESSAGE")
     assert "encrypted" not in posted["body"]  # send_message's shape, unchanged
+
+
+@pytest.mark.asyncio
+async def test_reply_with_explicit_mentions_posts_the_ids_and_the_text_as_written(keypair_a):
+    posted = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages"):
+            posted["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"id": "m1"})
+        return httpx.Response(200, json={"session": {"users": []}})
+
+    agent = make_agent(keypair_a, handler)
+
+    @agent.on_message
+    async def on_message(ctx):
+        await ctx.reply("@frame, what is the shot list?", mentions=["frame-id"])
+
+    await agent.dispatch(message_event(message="hi", encrypted=False))
+
+    assert posted["body"]["message"] == "@frame, what is the shot list?"  # no "@someone" bolted on
+    assert posted["body"]["mentions"] == ["frame-id"]
+
+
+@pytest.mark.asyncio
+async def test_reply_with_explicit_mentions_in_an_encrypted_room_still_encrypts(keypair_a):
+    posted = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages"):
+            posted["body"] = json.loads(request.content)
+            return httpx.Response(200, json={"id": "m1"})
+        return httpx.Response(200, json={
+            "session": {"users": [
+                {"id": "self-agent", "public_key": keypair_a.public_key},
+                {"id": "human-1", "public_key": keypair_a.public_key, "account_type": "User"},
+            ]}
+        })
+
+    agent = make_agent(keypair_a, handler)
+    ciphertext = crypto.encrypt_for("hi", [keypair_a.public_key])
+
+    @agent.on_message
+    async def on_message(ctx):
+        await ctx.reply("@mara, done.", mentions=["lead-id"])
+
+    await agent.dispatch(message_event(message=ciphertext, encrypted=True))
+
+    assert posted["body"]["message"].startswith("-----BEGIN PGP MESSAGE")
+    assert posted["body"]["mentions"] == ["lead-id"]
