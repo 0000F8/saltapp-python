@@ -26,6 +26,7 @@ DRAFT = {
         {"role": "Showrunner", "name": "Mara", "handle": "mara", "bio": "Runs the room.", "brief": "You are Mara...", "why": "Someone must decide."},
         {"role": "Writer", "name": "Quill", "handle": "quill", "bio": "Writes chapters.", "brief": "You are Quill...", "why": "The prose."},
     ],
+    "totals": {"actions_per_day": None, "model_budget_usd": None, "budget_basis": ""},
 }
 
 
@@ -136,3 +137,22 @@ async def test_async_helpers_mirror_the_sync_ones():
         ("PATCH", "/api/v1/agent_groups/g1"),
         ("PATCH", "/api/v1/agent_groups/g1/members/a2"),
     ]
+
+
+def test_draft_team_authority_step_returns_member_budgets_and_totals():
+    filled = {
+        **DRAFT,
+        "members": [{**m, "model_budget_usd": "10", "budget_basis": "About 3 actions a day"} for m in DRAFT["members"]],
+        "totals": {"actions_per_day": 20, "model_budget_usd": "20", "budget_basis": "About 20 actions a day across the team"},
+    }
+    calls, handler = recorder(200, {"draft": filled})
+    draft = make_sync(handler).draft_team("k", step="authority", draft=DRAFT)
+    assert json.loads(calls[0].content) == {"step": "authority", "draft": DRAFT}
+    assert draft["totals"]["model_budget_usd"] == "20"
+    assert draft["members"][0]["model_budget_usd"] == "10"
+
+
+def test_set_member_role_none_clears_the_role():
+    calls, handler = recorder()
+    make_sync(handler).set_member_role("k", "g1", "a2", None)
+    assert json.loads(calls[0].content) == {"role": None}

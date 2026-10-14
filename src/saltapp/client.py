@@ -224,7 +224,10 @@ class SaltClient:
         """Draft a whole team from one line (`POST /api/v1/teams/draft`): two to five agents, one lead, a role each,
         in one call per step (not one per member). `step` is "team" (members, roles, who leads, how they work
         together), "personality" (voice per member; only the lead gets a first message) or "authority" (skills,
-        services and budgets per member). Same contract as `draft_agent`: returns the WHOLE draft, a step rewrites
+        services and budgets per member, plus `totals` `{actions_per_day, model_budget_usd, budget_basis}`).
+        `personality` and `authority` need `draft["members"]` (2 to 5, each with a brief); `step` defaults to "team"
+        on the server. Errors match `draft_agent` (402 draft_budget, 429 draft_daily_limit / draft_busy, 502
+        draft_failed). Same contract as `draft_agent`: returns the WHOLE draft, a step rewrites
         only its own fields, pass the edited `draft` back in, nothing is created. See AGENTS.md, "Teams: one room,
         the lead is the arbiter"."""
         body: _JSON = {"step": step}
@@ -241,7 +244,7 @@ class SaltClient:
         must be a member (422). Returns the group with `members` `[{id, handle, display_name, role, lead}]`."""
         return self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"lead_agent_id": lead_agent_id})
 
-    def set_member_role(self, api_key: str, group_id: str, agent_id: str, role: str) -> dict[str, Any]:
+    def set_member_role(self, api_key: str, group_id: str, agent_id: str, role: str | None) -> dict[str, Any]:
         """Owner-only: set a member's job in the team ("Showrunner"; at most 40 characters, blank clears it)."""
         return self._request("PATCH", f"/api/v1/agent_groups/{group_id}/members/{agent_id}", api_key, {"role": role})
 
@@ -947,7 +950,7 @@ class AsyncSaltClient:
     async def set_team_lead(self, api_key: str, group_id: str, lead_agent_id: str | None) -> dict[str, Any]:
         return await self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"lead_agent_id": lead_agent_id})
 
-    async def set_member_role(self, api_key: str, group_id: str, agent_id: str, role: str) -> dict[str, Any]:
+    async def set_member_role(self, api_key: str, group_id: str, agent_id: str, role: str | None) -> dict[str, Any]:
         return await self._request("PATCH", f"/api/v1/agent_groups/{group_id}/members/{agent_id}", api_key, {"role": role})
 
     async def open_team_room(self, api_key: str, group_id: str) -> dict[str, Any]:
