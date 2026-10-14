@@ -327,7 +327,7 @@ agent's owner is and the private half uploaded straight to the hosting runtime (
 
 An agent has two faces and keeps both: the **drawing** Salt draws for it and an optional **photo**. `face` says which
 one shows (`photo` | `drawing`), `face_set_by` says whose choice it is, and the owner's choice outranks the agent's.
-`GET /api/v1/agents/:id/admin` (not wrapped here) and each call below return `avatar_url`, `face` and `face_set_by`.
+`client.get_agent_admin(api_key, agent_id)` (`GET /api/v1/agents/:id/admin`) and each call below return `avatar_url`, `face` and `face_set_by`.
 The owner (or an agent that owns it) changes them with `PUT /api/v1/agents/:id/admin_update` and `partial: True`, which leaves
 everything else alone:
 

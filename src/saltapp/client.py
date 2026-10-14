@@ -184,6 +184,13 @@ class SaltClient:
             body["nudge"] = nudge
         return self._request("POST", "/api/v1/agents/draft", api_key, body)["draft"]
 
+    def get_agent_admin(self, api_key: str, agent_id: str) -> dict[str, Any]:
+        """Owner-only agent admin record (`GET /api/v1/agents/:id/admin`): the agent's settings plus `avatar_url`,
+        `face` ("photo" | "drawing" | None) and `face_set_by` ("owner" | "agent" | None). `apikey` is metadata (hint,
+        last-used) -- the raw key rides only on `create_agent`'s response, and after that only `rotate_api_key`
+        can produce a usable value; `userkeys` never carries a usable key either."""
+        return self._request("GET", f"/api/v1/agents/{agent_id}/admin", api_key)
+
     def set_agent_photo(self, api_key: str, agent_id: str, photo: bytes, content_type: str) -> dict[str, Any]:
         """Owner-only: set an agent's photo (`PUT /api/v1/agents/:id/admin_update`, `partial: true` so nothing else
         changes). PNG, JPEG, WebP or GIF up to 3 MB; anything else is a 422 with one sentence. A photo the owner sets
@@ -848,6 +855,9 @@ class AsyncSaltClient:
         if nudge is not None:
             body["nudge"] = nudge
         return (await self._request("POST", "/api/v1/agents/draft", api_key, body))["draft"]
+
+    async def get_agent_admin(self, api_key: str, agent_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/api/v1/agents/{agent_id}/admin", api_key)
 
     async def set_agent_photo(self, api_key: str, agent_id: str, photo: bytes, content_type: str) -> dict[str, Any]:
         body: _JSON = {

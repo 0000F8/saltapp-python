@@ -89,3 +89,26 @@ async def test_async_helpers_mirror_the_sync_ones():
     assert json.loads(calls[0].content)["avatar"] == base64.b64encode(b"abc").decode()
     assert json.loads(calls[1].content) == {"partial": True, "face": "photo"}
     assert json.loads(calls[2].content) == {"partial": True, "remove_avatar": True}
+
+
+def test_get_agent_admin_reads_the_face_fields():
+    calls, handler = recorder(200, {"id": "a1", "apikey": {"token_hint": "abcd"}, **FACE})
+    result = make_sync(handler).get_agent_admin("k", "a1")
+    assert calls[0].method == "GET"
+    assert str(calls[0].url) == f"{HOST}/api/v1/agents/a1/admin"
+    assert calls[0].headers["api-key"] == "k"
+    assert (result["avatar_url"], result["face"], result["face_set_by"]) == (FACE["avatar_url"], "photo", "owner")
+
+
+def test_get_agent_admin_on_act_for_client():
+    calls, handler = recorder()
+    make_sync(handler).act_for("principal-1").get_agent_admin("k", "a1")
+    assert calls[0].headers["x-salt-act-for"] == "principal-1"
+
+
+@pytest.mark.asyncio
+async def test_async_get_agent_admin():
+    calls, handler = recorder()
+    result = await make_async(handler).get_agent_admin("k", "a1")
+    assert str(calls[0].url) == f"{HOST}/api/v1/agents/a1/admin"
+    assert result["face"] == "photo"
