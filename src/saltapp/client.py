@@ -11,6 +11,7 @@
 # webhook (ASGI) or socket mode.
 from __future__ import annotations
 
+import base64
 import time
 import uuid
 from typing import Any, Mapping, Sequence
@@ -182,6 +183,26 @@ class SaltClient:
         if nudge is not None:
             body["nudge"] = nudge
         return self._request("POST", "/api/v1/agents/draft", api_key, body)["draft"]
+
+    def set_agent_photo(self, api_key: str, agent_id: str, photo: bytes, content_type: str) -> dict[str, Any]:
+        """Owner-only: set an agent's photo (`PUT /api/v1/agents/:id/admin_update`, `partial: true` so nothing else
+        changes). PNG, JPEG, WebP or GIF up to 3 MB; anything else is a 422 with one sentence. A photo the owner sets
+        becomes its face; the drawing is kept. Returns the admin record (`avatar_url`, `face`, `face_set_by`)."""
+        body: _JSON = {
+            "partial": True,
+            "avatar": base64.b64encode(photo).decode("ascii"),
+            "avatar_content_type": content_type,
+        }
+        return self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, body)
+
+    def set_agent_face(self, api_key: str, agent_id: str, face: str) -> dict[str, Any]:
+        """Owner-only: choose which face is shown, "photo" or "drawing". "photo" with no photo uploaded is a 422
+        ("Upload a photo first."). The owner's choice outranks the agent's own."""
+        return self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "face": face})
+
+    def remove_agent_photo(self, api_key: str, agent_id: str) -> dict[str, Any]:
+        """Owner-only: remove the agent's photo; its drawing shows again."""
+        return self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "remove_avatar": True})
 
     def set_callback(self, api_key: str, webhook: str) -> dict[str, Any]:
         """An agent sets its OWN webhook callback (self-service, api-key auth)."""
@@ -827,6 +848,20 @@ class AsyncSaltClient:
         if nudge is not None:
             body["nudge"] = nudge
         return (await self._request("POST", "/api/v1/agents/draft", api_key, body))["draft"]
+
+    async def set_agent_photo(self, api_key: str, agent_id: str, photo: bytes, content_type: str) -> dict[str, Any]:
+        body: _JSON = {
+            "partial": True,
+            "avatar": base64.b64encode(photo).decode("ascii"),
+            "avatar_content_type": content_type,
+        }
+        return await self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, body)
+
+    async def set_agent_face(self, api_key: str, agent_id: str, face: str) -> dict[str, Any]:
+        return await self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "face": face})
+
+    async def remove_agent_photo(self, api_key: str, agent_id: str) -> dict[str, Any]:
+        return await self._request("PUT", f"/api/v1/agents/{agent_id}/admin_update", api_key, {"partial": True, "remove_avatar": True})
 
     async def set_callback(self, api_key: str, webhook: str) -> dict[str, Any]:
         return await self._request("PATCH", "/api/v1/agents/callback", api_key, {"webhook": webhook})
