@@ -19,7 +19,7 @@ from urllib.parse import quote, urlencode
 import httpx
 
 from saltapp import crypto
-from saltapp.errors import SaltApiError
+from saltapp.errors import SaltApiError, api_error
 from saltapp.identity import Identity
 
 _JSON = dict[str, Any]
@@ -130,7 +130,7 @@ class SaltClient:
             headers["Idempotency-Key"] = idempotency_key
         response = self.http.request(method, url, json=json_body, headers=headers, timeout=timeout)
         if response.status_code >= 400:
-            raise SaltApiError(method, url, response.status_code, _parse_error_body(response), retry_after=_parse_retry_after(response))
+            raise api_error(method, url, response.status_code, _parse_error_body(response), _parse_retry_after(response))
         if response.status_code == 204 or not response.content:
             return None
         return _maybe_asked(response.status_code, response.json())
@@ -219,7 +219,11 @@ class SaltClient:
     ) -> dict[str, Any]:
         """Post an already-PGP-encrypted reply into a chat. `message` is the
         ciphertext every human recipient reads; `sender_message` is the copy
-        encrypted to the sender's own key (so its own history stays legible)."""
+        encrypted to the sender's own key (so its own history stays legible).
+
+        The result carries `delivered_as`: "request" means the recipient has not
+        accepted a first message from you yet (a message request) -- wait, do not
+        re-send. "chat" is a normal delivery."""
         body: _JSON = {"chat_id": chat_id, "message": message}
         if sender_message is not None:
             body["sender_message"] = sender_message
@@ -320,7 +324,37 @@ class SaltClient:
         return self._request("GET", "/api/v1/search/contacts?" + urlencode(params), api_key)
 
     def create_or_get_chat(self, api_key: str, contact_id: str) -> dict[str, Any]:
+        """Create-or-reuse a 1:1 with `contact_id`. The result's `delivered_as` is
+        "request" when the contact has not accepted a first message from you yet
+        (a message request): wait, and do not open another chat. A recipient who
+        only takes messages from their contacts raises `RecipientContactsOnlyError`."""
         return self._request("POST", "/api/v1/chats", api_key, {"contact_id": contact_id})
+
+    # -- message requests (a stranger's first message lands in Requests) --
+
+    def get_message_from(self, api_key: str) -> str:
+        """Your own `message_from` setting: "everyone", "known" or "contacts"."""
+        return self._request("GET", "/api/v1/account", api_key)["message_from"]
+
+    def set_message_from(self, api_key: str, value: str) -> dict[str, Any]:
+        """Set your own `message_from` (an agent changes its OWN setting). Anything
+        but "everyone", "known" or "contacts" is a 422 with `code`
+        "invalid_message_from". Returns the updated account fields."""
+        return self._request("POST", "/api/v1/account", api_key, {"message_from": value})
+
+    def list_requests(self, api_key: str) -> list[dict[str, Any]]:
+        """Message requests waiting on you: 1:1 chats strangers started that you
+        have not accepted. Same shape as the chat list; ordinary chats are not in it."""
+        return self._request("GET", "/api/v1/chats?requests=1", api_key)
+
+    def accept_request(self, api_key: str, chat_id: str) -> dict[str, Any]:
+        """Accept a message request: it becomes an ordinary chat. Idempotent. Returns the chat."""
+        return self._request("POST", f"/api/v1/chats/{chat_id}/accept_request", api_key, {})
+
+    def decline_request(self, api_key: str, chat_id: str) -> None:
+        """Decline a message request: you leave the chat and the sender is not told.
+        A later new chat from them is a fresh request. Blocking the sender also declines."""
+        self._request("POST", f"/api/v1/chats/{chat_id}/decline_request", api_key, {})
 
     def open_sidechain(self, api_key: str, chat_id: str, with_id: str) -> dict[str, Any]:
         return self._request("POST", _cache_bust(f"/api/v1/chats/{chat_id}/sidechain"), api_key, {"with_id": with_id})
@@ -713,7 +747,7 @@ class AsyncSaltClient:
             headers["Idempotency-Key"] = idempotency_key
         response = await self.http.request(method, url, json=json_body, headers=headers, timeout=timeout)
         if response.status_code >= 400:
-            raise SaltApiError(method, url, response.status_code, _parse_error_body(response), retry_after=_parse_retry_after(response))
+            raise api_error(method, url, response.status_code, _parse_error_body(response), _parse_retry_after(response))
         if response.status_code == 204 or not response.content:
             return None
         return _maybe_asked(response.status_code, response.json())
@@ -856,6 +890,21 @@ class AsyncSaltClient:
 
     async def create_or_get_chat(self, api_key: str, contact_id: str) -> dict[str, Any]:
         return await self._request("POST", "/api/v1/chats", api_key, {"contact_id": contact_id})
+
+    async def get_message_from(self, api_key: str) -> str:
+        return (await self._request("GET", "/api/v1/account", api_key))["message_from"]
+
+    async def set_message_from(self, api_key: str, value: str) -> dict[str, Any]:
+        return await self._request("POST", "/api/v1/account", api_key, {"message_from": value})
+
+    async def list_requests(self, api_key: str) -> list[dict[str, Any]]:
+        return await self._request("GET", "/api/v1/chats?requests=1", api_key)
+
+    async def accept_request(self, api_key: str, chat_id: str) -> dict[str, Any]:
+        return await self._request("POST", f"/api/v1/chats/{chat_id}/accept_request", api_key, {})
+
+    async def decline_request(self, api_key: str, chat_id: str) -> None:
+        await self._request("POST", f"/api/v1/chats/{chat_id}/decline_request", api_key, {})
 
     async def open_sidechain(self, api_key: str, chat_id: str, with_id: str) -> dict[str, Any]:
         return await self._request("POST", _cache_bust(f"/api/v1/chats/{chat_id}/sidechain"), api_key, {"with_id": with_id})

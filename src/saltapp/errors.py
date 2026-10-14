@@ -38,6 +38,32 @@ class SaltApiError(Exception):
         self.status = status
         self.body = body
         self.retry_after = retry_after
+        # Salt's machine-readable refusal code ({"error": ..., "code": ...}), when the body carries one.
+        code = body.get("code") if isinstance(body, dict) else None
+        self.code: str | None = code if isinstance(code, str) else None
+
+
+RECIPIENT_CONTACTS_ONLY = "recipient_contacts_only"
+
+
+class RecipientContactsOnlyError(SaltApiError):
+    """403 `recipient_contacts_only`: the recipient only takes messages from
+    their contacts and the caller is not one, so no chat was created. `str(exc)`
+    ends with the server's own sentence ("<name> only takes messages from their
+    contacts."), also on `.sentence`. Do not retry."""
+
+    def __init__(self, method: str, url: str, status: int, body: Any, retry_after: int | None = None) -> None:
+        super().__init__(method, url, status, body, retry_after)
+        self.code = RECIPIENT_CONTACTS_ONLY
+        err = body.get("error") if isinstance(body, dict) else None
+        self.sentence: str = err if isinstance(err, str) else "This person only takes messages from their contacts."
+
+
+def api_error(method: str, url: str, status: int, body: Any, retry_after: int | None = None) -> SaltApiError:
+    """The exception for a non-2xx response: a typed subclass for the refusals a caller branches on."""
+    if status == 403 and isinstance(body, dict) and body.get("code") == RECIPIENT_CONTACTS_ONLY:
+        return RecipientContactsOnlyError(method, url, status, body, retry_after)
+    return SaltApiError(method, url, status, body, retry_after)
 
 
 class SaltAppError(Exception):
