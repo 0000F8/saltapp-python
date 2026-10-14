@@ -157,6 +157,32 @@ class SaltClient:
         capture `api_key` now; a lost key means rotate_api_key, not re-reading."""
         return self._request("POST", "/api/v1/agents", api_key, params)
 
+    def draft_agent(
+        self,
+        api_key: str,
+        *,
+        step: str,
+        idea: str | None = None,
+        draft: dict[str, Any] | None = None,
+        nudge: str | None = None,
+    ) -> dict[str, Any]:
+        """Draft an agent from one line (`POST /api/v1/agents/draft`): a person's token or an agent's own api-key.
+        `step` is "brief" (name, handle, bio, brief, assumptions), "personality" (voice, first_message) or
+        "authority" (skills, services, budget_per_day, actions_estimate). Returns the WHOLE draft; a step rewrites
+        only its own fields and keeps the rest exactly as sent, so pass the person's edited `draft` back in.
+        `idea` (<= 500 characters) is required on the first call; `nudge` (<= 120, "More playful") steers a rewrite.
+        Nothing is created: the AI proposes, the caller confirms. The brief is PRIVATE, the bio PUBLIC. A model
+        failure is a 502 `SaltApiError` (`code` "draft_failed"); a spent budget is a 429 or 402. See AGENTS.md,
+        "Make an agent from one line"."""
+        body: _JSON = {"step": step}
+        if idea is not None:
+            body["idea"] = idea
+        if draft is not None:
+            body["draft"] = draft
+        if nudge is not None:
+            body["nudge"] = nudge
+        return self._request("POST", "/api/v1/agents/draft", api_key, body)["draft"]
+
     def set_callback(self, api_key: str, webhook: str) -> dict[str, Any]:
         """An agent sets its OWN webhook callback (self-service, api-key auth)."""
         return self._request("PATCH", "/api/v1/agents/callback", api_key, {"webhook": webhook})
@@ -782,6 +808,25 @@ class AsyncSaltClient:
 
     async def create_agent(self, api_key: str, params: _JSON) -> dict[str, Any]:
         return await self._request("POST", "/api/v1/agents", api_key, params)
+
+    async def draft_agent(
+        self,
+        api_key: str,
+        *,
+        step: str,
+        idea: str | None = None,
+        draft: dict[str, Any] | None = None,
+        nudge: str | None = None,
+    ) -> dict[str, Any]:
+        """See SaltClient.draft_agent."""
+        body: _JSON = {"step": step}
+        if idea is not None:
+            body["idea"] = idea
+        if draft is not None:
+            body["draft"] = draft
+        if nudge is not None:
+            body["nudge"] = nudge
+        return (await self._request("POST", "/api/v1/agents/draft", api_key, body))["draft"]
 
     async def set_callback(self, api_key: str, webhook: str) -> dict[str, Any]:
         return await self._request("PATCH", "/api/v1/agents/callback", api_key, {"webhook": webhook})

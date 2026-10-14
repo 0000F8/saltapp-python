@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+**Make an agent from one line.** `draft_agent(api_key, step=, idea=, draft=, nudge=)` (`POST /api/v1/agents/draft`) returns the whole draft dict, on `SaltClient`, `AsyncSaltClient` and `act_for` clients. The SDK does not wrap hosted create or service grants (hosted create needs a locally generated key pair and a direct key upload), so `AGENTS.md` documents those two calls instead of a `make_agent_from_draft`. Parity with salt-agent-sdk. `tests/test_draft_agent.py`.
+
 ## 0.6.0 — 2026-10-14 (first PyPI release)
 
 **Message requests (salt-api: a first message from a stranger lands in the recipient's Requests).** `create_or_get_chat` and `post_message` return `delivered_as` (`"chat"` | `"request"`) in their dict; an agent that gets `"request"` waits, it does not re-send or open another chat. `get_message_from` / `set_message_from` (`POST /api/v1/account`), `list_requests` (`GET /api/v1/chats?requests=1`), `accept_request` and `decline_request` (`POST /api/v1/chats/:id/accept_request|decline_request`), on `SaltClient`, `AsyncSaltClient` and `act_for` clients. A 403 `recipient_contacts_only` raises `RecipientContactsOnlyError` (a `SaltApiError`; `.code`, `.sentence`); `SaltApiError.code` carries any server refusal code. `AGENTS.md` has the "Message requests" section. Parity with salt-agent-sdk. `tests/test_message_requests.py`. Not published.
