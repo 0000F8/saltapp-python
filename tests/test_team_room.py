@@ -201,3 +201,50 @@ async def test_async_team_rules():
     assert await client.get_team_rules("k", "g1") == RULES
     assert await client.set_team_rules("k", "g1", []) == RULES
     assert [c.method for c in calls] == ["GET", "PATCH"]
+
+
+def test_set_team_rules_validates_service_and_expiry_before_sending():
+    calls, handler = recorder(200, {**GROUP, "rules": RULES})
+    client = make_sync(handler)
+    with pytest.raises(ValueError, match="needs a service"):
+        client.set_team_rules("k", "g1", [{"text": "x", "approve_paid": False}])
+    with pytest.raises(ValueError, match="in the future"):
+        client.set_team_rules("k", "g1", [{"text": "x", "expires_at": "2020-01-01T00:00:00Z"}])
+    assert calls == []
+    client.set_team_rules("k", "g1", [{"text": "x", "approve_paid": False, "service": "Acme"}])
+    assert len(calls) == 1
+
+
+def test_stale_rules_409_raises_the_typed_error():
+    from saltapp import StaleRulesError
+
+    stale = {"error": "stale", "code": "stale_rules", "updated_at": "2026-10-15T01:00:00.000000Z", "rules": RULES}
+    calls, handler = recorder(409, stale)
+    with pytest.raises(StaleRulesError) as exc:
+        make_sync(handler).set_team_rules("k", "g1", [], "2026-10-15T00:00:00.000000Z")
+    assert isinstance(exc.value, SaltApiError)
+    assert exc.value.rules == RULES and exc.value.updated_at == stale["updated_at"]
+    assert json.loads(calls[0].content) == {"rules": [], "base_version": "2026-10-15T00:00:00.000000Z"}
+    _, other = recorder(409, {"error": "nope"})
+    with pytest.raises(SaltApiError) as exc2:
+        make_sync(other).set_team_rules("k", "g1", [])
+    assert not isinstance(exc2.value, StaleRulesError)
+
+
+def test_publish_team_and_set_team_listed():
+    calls, handler = recorder(200, {"id": "t1", "slug": "driftlight", "listed": True})
+    client = make_sync(handler)
+    assert client.publish_team("k", "g1", True)["slug"] == "driftlight"
+    assert json.loads(calls[0].content) == {"agent_group_id": "g1", "listed": True}
+    client.set_team_listed("k", "driftlight", False)
+    assert calls[1].method == "PATCH" and str(calls[1].url) == f"{HOST}/api/v1/team_templates/driftlight"
+    assert json.loads(calls[1].content) == {"listed": False}
+
+
+@pytest.mark.asyncio
+async def test_async_publish_and_listed():
+    calls, handler = recorder(200, {"slug": "driftlight"})
+    client = make_async(handler)
+    assert (await client.publish_team("k", "g1", False))["slug"] == "driftlight"
+    await client.set_team_listed("k", "driftlight", True)
+    assert [c.method for c in calls] == ["POST", "PATCH"]

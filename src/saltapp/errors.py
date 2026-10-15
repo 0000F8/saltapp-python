@@ -59,10 +59,27 @@ class RecipientContactsOnlyError(SaltApiError):
         self.sentence: str = err if isinstance(err, str) else "This person only takes messages from their contacts."
 
 
+STALE_RULES = "stale_rules"
+
+
+class StaleRulesError(SaltApiError):
+    """409 `stale_rules` from `set_team_rules` when you passed a `base_version` and the rules changed since. Carries
+    the current `rules` and `updated_at` (use it as the next `base_version`): merge your change onto them and send again."""
+
+    def __init__(self, method: str, url: str, status: int, body: Any, retry_after: int | None = None) -> None:
+        super().__init__(method, url, status, body, retry_after)
+        self.code = STALE_RULES
+        b = body if isinstance(body, dict) else {}
+        self.rules: list[dict[str, Any]] = b.get("rules") or []
+        self.updated_at: str = b.get("updated_at") or ""
+
+
 def api_error(method: str, url: str, status: int, body: Any, retry_after: int | None = None) -> SaltApiError:
     """The exception for a non-2xx response: a typed subclass for the refusals a caller branches on."""
     if status == 403 and isinstance(body, dict) and body.get("code") == RECIPIENT_CONTACTS_ONLY:
         return RecipientContactsOnlyError(method, url, status, body, retry_after)
+    if status == 409 and isinstance(body, dict) and body.get("code") == STALE_RULES:
+        return StaleRulesError(method, url, status, body, retry_after)
     return SaltApiError(method, url, status, body, retry_after)
 
 

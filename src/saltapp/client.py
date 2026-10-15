@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote, urlencode
 
@@ -27,6 +28,16 @@ _JSON = dict[str, Any]
 
 # Headers salt-api reads for a mandate-governed call (Mandates R2). See
 # SaltClient.act_for / AsyncSaltClient.act_for below.
+def _check_rules(rules: list[dict[str, Any]]) -> None:
+    """Refuse client-side what the server would answer 422: `approve_paid: False` without a `service`, and a past `expires_at`."""
+    for rule in rules:
+        if rule.get("approve_paid") is False and not rule.get("service"):
+            raise ValueError(f"Rule {rule.get('text')!r}: approve_paid False needs a service to apply to.")
+        exp = rule.get("expires_at")
+        if exp and datetime.fromisoformat(str(exp).replace("Z", "+00:00")) <= datetime.now(timezone.utc):
+            raise ValueError(f"Rule {rule.get('text')!r}: expires_at must be in the future.")
+
+
 def _rules_of(listing: dict[str, Any], group_id: str) -> list[dict[str, Any]]:
     for group in listing.get("groups") or []:
         if str(group.get("id")) == str(group_id):
@@ -257,11 +268,33 @@ class SaltClient:
         `my_teams` (`rules`) instead."""
         return _rules_of(self._request("GET", "/api/v1/agent_groups", api_key), group_id)
 
-    def set_team_rules(self, api_key: str, group_id: str, rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Owner-only: replace the WHOLE list of the team's pinned rules (at most 10, each `text` at most 200 characters, else 422).
-        Send `[{text, approve_paid}]` (`id`/`created_at` are the server's). `approve_paid: True` means ask the owner
-        before every paid service write, not just the first per job. Returns the saved list."""
-        return self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"rules": rules})["rules"]
+    def set_team_rules(self, api_key: str, group_id: str, rules: list[dict[str, Any]], base_version: str | None = None) -> list[dict[str, Any]]:
+        """Owner-only: replace the WHOLE list of the team's pinned rules (at most 10, each `text` at most 200
+        characters, else 422). Send `[{text, approve_paid?, service?, expires_at?}]` (`id`/`created_at` are the server's).
+        `approve_paid: False` needs a `service`, and `expires_at` must be in the future: both raise ValueError here
+        before sending. Pass `base_version` (the group's `updated_at`) to refuse overwriting a change made since you
+        loaded the rules: the server answers 409 and this raises `StaleRulesError` (a SaltApiError) with the current
+        `rules` and `updated_at`. Returns the saved list."""
+        _check_rules(rules)
+        body: dict[str, Any] = {"rules": rules}
+        if base_version:
+            body["base_version"] = base_version
+        return self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, body)["rules"]
+
+    def publish_team(self, api_key: str, agent_group_id: str, listed: bool, name: str | None = None, description: str | None = None) -> dict[str, Any]:
+        """Owner-only: publish one of your teams as a shareable template (`POST /api/v1/team_templates`). Returns the
+        template, whose `slug` is its share id. Publishing the same team again refreshes its existing template.
+        `listed` puts it on the Teams shelf."""
+        body: dict[str, Any] = {"agent_group_id": agent_group_id, "listed": listed}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        return self._request("POST", "/api/v1/team_templates", api_key, body)
+
+    def set_team_listed(self, api_key: str, slug: str, listed: bool) -> dict[str, Any]:
+        """Author only: list or unlist a published team template by its slug."""
+        return self._request("PATCH", f"/api/v1/team_templates/{slug}", api_key, {"listed": listed})
 
     def set_member_role(self, api_key: str, group_id: str, agent_id: str, role: str | None) -> dict[str, Any]:
         """Owner-only: set a member's job in the team ("Lead"; at most 40 characters, blank clears it)."""
@@ -975,8 +1008,23 @@ class AsyncSaltClient:
     async def get_team_rules(self, api_key: str, group_id: str) -> list[dict[str, Any]]:
         return _rules_of(await self._request("GET", "/api/v1/agent_groups", api_key), group_id)
 
-    async def set_team_rules(self, api_key: str, group_id: str, rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return (await self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"rules": rules}))["rules"]
+    async def set_team_rules(self, api_key: str, group_id: str, rules: list[dict[str, Any]], base_version: str | None = None) -> list[dict[str, Any]]:
+        _check_rules(rules)
+        body: dict[str, Any] = {"rules": rules}
+        if base_version:
+            body["base_version"] = base_version
+        return (await self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, body))["rules"]
+
+    async def publish_team(self, api_key: str, agent_group_id: str, listed: bool, name: str | None = None, description: str | None = None) -> dict[str, Any]:
+        body: dict[str, Any] = {"agent_group_id": agent_group_id, "listed": listed}
+        if name is not None:
+            body["name"] = name
+        if description is not None:
+            body["description"] = description
+        return await self._request("POST", "/api/v1/team_templates", api_key, body)
+
+    async def set_team_listed(self, api_key: str, slug: str, listed: bool) -> dict[str, Any]:
+        return await self._request("PATCH", f"/api/v1/team_templates/{slug}", api_key, {"listed": listed})
 
     async def set_member_role(self, api_key: str, group_id: str, agent_id: str, role: str | None) -> dict[str, Any]:
         return await self._request("PATCH", f"/api/v1/agent_groups/{group_id}/members/{agent_id}", api_key, {"role": role})
