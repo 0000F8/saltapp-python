@@ -59,7 +59,18 @@ class RecipientContactsOnlyError(SaltApiError):
         self.sentence: str = err if isinstance(err, str) else "This person only takes messages from their contacts."
 
 
+# `SaltApiError.code` values on a refused rule write or rule card. Read the code, not the sentence.
+RULES_CAP = "rules_cap"
+RULE_NEEDS_SERVICE = "rule_needs_service"
+RULE_EXPIRED = "rule_expired"
+RULE_REMOVES_UNNAMED = "rule_removes_unnamed"
+RULE_INVALID = "rule_invalid"
 STALE_RULES = "stale_rules"
+OWNER_ONLY = "owner_only"
+PAYER_ONLY = "payer_only"
+RULE_ERROR_CODES = frozenset(
+    {RULES_CAP, RULE_NEEDS_SERVICE, RULE_EXPIRED, RULE_REMOVES_UNNAMED, RULE_INVALID, STALE_RULES, OWNER_ONLY, PAYER_ONLY}
+)
 
 
 class StaleRulesError(SaltApiError):

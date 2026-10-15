@@ -398,6 +398,9 @@ is saved, never a setup step.
   routes, reviews the plan or brief, signs off, and the approval rule then applies.
 - **Rule writes and validity.** `set_team_rules(api_key, group_id, rules, base_version=None)`: `base_version` is the group's `updated_at`; a 409 `stale_rules` raises `StaleRulesError` (a `SaltApiError`) with `rules` and `updated_at`. Merge onto the returned rules and send again. `approve_paid: false` needs a
   `service` and `expires_at` must be in the future: the SDK refuses both before sending (the server answers 422).
+- **Rule refusals carry a `code`.** Read `exc.code` (set `RULE_ERROR_CODES`) (`rules_cap`, `rule_needs_service`, `rule_expired`, `rule_removes_unnamed`,
+  `rule_invalid`, plus `stale_rules`, `owner_only`, `payer_only`), not the sentence. On `rule_removes_unnamed` the new
+  rule would silently drop an existing one: re-propose it with `replaces: [{id, text}]` naming what it replaces.
 - **Who may author which card.** In a team room, an `accept_team_rule` card may come only from the lead, and the approve,
   change, go-anyway and don't-ask-again buttons only from a member the owner owns; anyone else gets a 403. Salt writes the
   label, `rule_summary` (multi-line, read-only) and `service_label` on `accept_team_rule` and `dont_ask_again` itself, so

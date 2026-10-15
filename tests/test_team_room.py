@@ -248,3 +248,13 @@ async def test_async_publish_and_listed():
     assert (await client.publish_team("k", "g1", False))["slug"] == "driftlight"
     await client.set_team_listed("k", "driftlight", True)
     assert [c.method for c in calls] == ["POST", "PATCH"]
+
+
+def test_rule_error_codes_are_exposed_on_the_error():
+    from saltapp import RULE_ERROR_CODES
+
+    assert "rule_removes_unnamed" in RULE_ERROR_CODES
+    _, handler = recorder(422, {"error": "Would drop a rule.", "code": "rule_removes_unnamed"})
+    with pytest.raises(SaltApiError) as exc:
+        make_sync(handler).set_team_rules("k", "g1", [{"text": "x"}])
+    assert exc.value.code == "rule_removes_unnamed"
