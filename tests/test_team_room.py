@@ -171,18 +171,18 @@ def test_set_team_lead_with_an_unowned_agent_raises_the_422():
     assert caught.value.status == 422
 
 
-RULES = [{"id": "r1", "text": "Ask before spending", "approve_paid": True, "created_at": "2026-10-15T00:00:00Z"}]
+RULES = [{"id": "r1", "text": "Ask before spending", "approve_paid": True, "service": None, "created_at": "2026-10-15T00:00:00Z", "expires_at": None}]
 
 
 def test_get_and_set_team_rules():
-    calls, handler = recorder(200, {**GROUP, "rules": RULES})
+    calls, handler = recorder(200, {"groups": [{**GROUP, "id": "g0", "rules": []}, {**GROUP, "rules": RULES}], **{"rules": RULES}})
     client = make_sync(handler)
     assert client.get_team_rules("k", "g1") == RULES
-    assert calls[0].method == "GET" and str(calls[0].url) == f"{HOST}/api/v1/agent_groups/g1"
+    assert calls[0].method == "GET" and str(calls[0].url) == f"{HOST}/api/v1/agent_groups"
     assert client.set_team_rules("k", "g1", [{"text": "Ask before spending", "approve_paid": True}]) == RULES
     assert calls[1].method == "PATCH"
     assert json.loads(calls[1].content) == {"rules": [{"text": "Ask before spending", "approve_paid": True}]}
-    calls, handler = recorder(200, GROUP)
+    calls, handler = recorder(200, {"groups": [GROUP]})
     assert make_sync(handler).get_team_rules("k", "g1") == []
 
 
@@ -196,7 +196,7 @@ def test_set_team_rules_422_raises_and_act_for_carries_the_header():
 
 @pytest.mark.asyncio
 async def test_async_team_rules():
-    calls, handler = recorder(200, {**GROUP, "rules": RULES})
+    calls, handler = recorder(200, {"groups": [{**GROUP, "rules": RULES}], "rules": RULES})
     client = make_async(handler)
     assert await client.get_team_rules("k", "g1") == RULES
     assert await client.set_team_rules("k", "g1", []) == RULES

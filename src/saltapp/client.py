@@ -27,6 +27,13 @@ _JSON = dict[str, Any]
 
 # Headers salt-api reads for a mandate-governed call (Mandates R2). See
 # SaltClient.act_for / AsyncSaltClient.act_for below.
+def _rules_of(listing: dict[str, Any], group_id: str) -> list[dict[str, Any]]:
+    for group in listing.get("groups") or []:
+        if str(group.get("id")) == str(group_id):
+            return group.get("rules") or []
+    return []
+
+
 ACT_FOR_HEADER = "X-Salt-Act-For"
 MANDATE_HEADER = "X-Salt-Mandate"
 
@@ -245,12 +252,13 @@ class SaltClient:
         return self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"lead_agent_id": lead_agent_id})
 
     def get_team_rules(self, api_key: str, group_id: str) -> list[dict[str, Any]]:
-        """Owner-only: the team's pinned rules, `[{id, text, approve_paid, created_at}]` (`GET /api/v1/agent_groups/:id`).
-        A team agent reads them with `my_teams` (`rules`) instead."""
-        return self._request("GET", f"/api/v1/agent_groups/{group_id}", api_key).get("rules") or []
+        """Owner-only: the team's pinned rules, `[{id, text, approve_paid (True/False/None), service, created_at,
+        expires_at}]`, taken from `GET /api/v1/agent_groups` (there is no per-group GET). A team agent reads them with
+        `my_teams` (`rules`) instead."""
+        return _rules_of(self._request("GET", "/api/v1/agent_groups", api_key), group_id)
 
     def set_team_rules(self, api_key: str, group_id: str, rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Owner-only: replace the team's pinned rules (at most 10, each `text` at most 200 characters, else 422).
+        """Owner-only: replace the WHOLE list of the team's pinned rules (at most 10, each `text` at most 200 characters, else 422).
         Send `[{text, approve_paid}]` (`id`/`created_at` are the server's). `approve_paid: True` means ask the owner
         before every paid service write, not just the first per job. Returns the saved list."""
         return self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"rules": rules})["rules"]
@@ -965,7 +973,7 @@ class AsyncSaltClient:
         return await self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"lead_agent_id": lead_agent_id})
 
     async def get_team_rules(self, api_key: str, group_id: str) -> list[dict[str, Any]]:
-        return (await self._request("GET", f"/api/v1/agent_groups/{group_id}", api_key)).get("rules") or []
+        return _rules_of(await self._request("GET", "/api/v1/agent_groups", api_key), group_id)
 
     async def set_team_rules(self, api_key: str, group_id: str, rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return (await self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"rules": rules}))["rules"]
