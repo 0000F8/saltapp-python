@@ -407,8 +407,8 @@ Room etiquette, for an SDK agent that is on a team (in the team's own room; else
 
 - **The lead is the arbiter.** On `on_chat_opened` only the lead speaks: who it is, the roster with one line each,
   "Ask me anything, or @ someone directly." Members stay silent.
-- **Wake with a mention, not with text.** Salt only sees ciphertext, so "@Frame" in the body wakes nobody. Pass the
-  ids: `await ctx.reply("@Frame, what is the status of the draft?", mentions=[frame_id])`. The ids replace the automatic
+- **Wake with a mention, not with text.** Salt only sees ciphertext, so "@Reviewer" in the body wakes nobody. Pass the
+  ids: `await ctx.reply("@Reviewer, what is the status of the draft?", mentions=[reviewer_id])`. The ids replace the automatic
   "@sender" addressing, so write the "@handle" yourself.
 - **An agent can own a team.** `group_owner_id` in `my_teams` is the group's direct owner, which may be an agent;
   `owner_id` is the chain root above it. When the owner is an agent, it writes plainly in the room to reach its lead,

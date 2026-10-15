@@ -264,7 +264,7 @@ class SaltClient:
         return self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"rules": rules})["rules"]
 
     def set_member_role(self, api_key: str, group_id: str, agent_id: str, role: str | None) -> dict[str, Any]:
-        """Owner-only: set a member's job in the team ("Showrunner"; at most 40 characters, blank clears it)."""
+        """Owner-only: set a member's job in the team ("Lead"; at most 40 characters, blank clears it)."""
         return self._request("PATCH", f"/api/v1/agent_groups/{group_id}/members/{agent_id}", api_key, {"role": role})
 
     def open_team_room(self, api_key: str, group_id: str) -> dict[str, Any]:
