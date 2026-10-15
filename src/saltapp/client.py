@@ -244,6 +244,17 @@ class SaltClient:
         must be a member you own (422). Returns the group with `members` `[{id, handle, display_name, role, lead, owned}]`."""
         return self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"lead_agent_id": lead_agent_id})
 
+    def get_team_rules(self, api_key: str, group_id: str) -> list[dict[str, Any]]:
+        """Owner-only: the team's pinned rules, `[{id, text, approve_paid, created_at}]` (`GET /api/v1/agent_groups/:id`).
+        A team agent reads them with `my_teams` (`rules`) instead."""
+        return self._request("GET", f"/api/v1/agent_groups/{group_id}", api_key).get("rules") or []
+
+    def set_team_rules(self, api_key: str, group_id: str, rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Owner-only: replace the team's pinned rules (at most 10, each `text` at most 200 characters, else 422).
+        Send `[{text, approve_paid}]` (`id`/`created_at` are the server's). `approve_paid: True` means ask the owner
+        before every paid service write, not just the first per job. Returns the saved list."""
+        return self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"rules": rules})["rules"]
+
     def set_member_role(self, api_key: str, group_id: str, agent_id: str, role: str | None) -> dict[str, Any]:
         """Owner-only: set a member's job in the team ("Showrunner"; at most 40 characters, blank clears it)."""
         return self._request("PATCH", f"/api/v1/agent_groups/{group_id}/members/{agent_id}", api_key, {"role": role})
@@ -257,7 +268,8 @@ class SaltClient:
     def my_teams(self, api_key: str) -> list[dict[str, Any]]:
         """The teams the caller is a member of (`GET /api/v1/agent/teams`, by the agent's own api-key): each
         `{id, name, lead_agent_id, room_chat_id, owner_id (the chain root), group_owner_id (the group's direct owner, who may
-        be an agent), members: [{id, handle, display_name, role, lead, owned}]}`.
+        be an agent), rules: [{id, text, approve_paid}] (the owner's pinned team rules: honour every one on every team-room turn),
+        members: [{id, handle, display_name, role, lead, owned}]}`.
         This is how a team agent learns who else is in its room. Never carries a member's brief or settings."""
         return self._request("GET", "/api/v1/agent/teams", api_key)["teams"]
 
@@ -951,6 +963,12 @@ class AsyncSaltClient:
 
     async def set_team_lead(self, api_key: str, group_id: str, lead_agent_id: str | None) -> dict[str, Any]:
         return await self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"lead_agent_id": lead_agent_id})
+
+    async def get_team_rules(self, api_key: str, group_id: str) -> list[dict[str, Any]]:
+        return (await self._request("GET", f"/api/v1/agent_groups/{group_id}", api_key)).get("rules") or []
+
+    async def set_team_rules(self, api_key: str, group_id: str, rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return (await self._request("PATCH", f"/api/v1/agent_groups/{group_id}", api_key, {"rules": rules}))["rules"]
 
     async def set_member_role(self, api_key: str, group_id: str, agent_id: str, role: str | None) -> dict[str, Any]:
         return await self._request("PATCH", f"/api/v1/agent_groups/{group_id}/members/{agent_id}", api_key, {"role": role})

@@ -169,3 +169,35 @@ def test_set_team_lead_with_an_unowned_agent_raises_the_422():
     with pytest.raises(SaltApiError) as caught:
         make_sync(handler).set_team_lead("k", "g1", "outsider")
     assert caught.value.status == 422
+
+
+RULES = [{"id": "r1", "text": "Ask before spending", "approve_paid": True, "created_at": "2026-10-15T00:00:00Z"}]
+
+
+def test_get_and_set_team_rules():
+    calls, handler = recorder(200, {**GROUP, "rules": RULES})
+    client = make_sync(handler)
+    assert client.get_team_rules("k", "g1") == RULES
+    assert calls[0].method == "GET" and str(calls[0].url) == f"{HOST}/api/v1/agent_groups/g1"
+    assert client.set_team_rules("k", "g1", [{"text": "Ask before spending", "approve_paid": True}]) == RULES
+    assert calls[1].method == "PATCH"
+    assert json.loads(calls[1].content) == {"rules": [{"text": "Ask before spending", "approve_paid": True}]}
+    calls, handler = recorder(200, GROUP)
+    assert make_sync(handler).get_team_rules("k", "g1") == []
+
+
+def test_set_team_rules_422_raises_and_act_for_carries_the_header():
+    with pytest.raises(SaltApiError):
+        make_sync(lambda request: httpx.Response(422, json={"error": "Too many rules"})).set_team_rules("k", "g1", [])
+    calls, handler = recorder(200, {**GROUP, "rules": RULES})
+    make_sync(handler).act_for("principal-1").set_team_rules("k", "g1", [])
+    assert calls[0].headers["x-salt-act-for"] == "principal-1"
+
+
+@pytest.mark.asyncio
+async def test_async_team_rules():
+    calls, handler = recorder(200, {**GROUP, "rules": RULES})
+    client = make_async(handler)
+    assert await client.get_team_rules("k", "g1") == RULES
+    assert await client.set_team_rules("k", "g1", []) == RULES
+    assert [c.method for c in calls] == ["GET", "PATCH"]
