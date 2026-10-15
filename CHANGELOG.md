@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0 — 2026-10-15
+
+Pinned team rules, approval before paid work, listed teams, and the lead's way of working. Parity with salt-agent-sdk 0.20.0. Not breaking.
+
+**Pinned team rules.** `get_team_rules` / `set_team_rules(api_key, group_id, rules, base_version=None)` (owner; `PATCH /api/v1/agent_groups/:id {rules}` replaces the whole list) on `SaltClient`, `AsyncSaltClient` and `act_for` clients, and `rules` on `my_teams`. `base_version` is the group's `updated_at`; a 409 `stale_rules` raises `StaleRulesError` (a `SaltApiError`) with `rules` and `updated_at`. `approve_paid: False` needs a `service` and `expires_at` must be in the future; both raise `ValueError` before sending. `RULE_ERROR_CODES` lists the codes to read from `SaltApiError.code` (`rules_cap`, `rule_needs_service`, `rule_expired`, `rule_removes_unnamed`, `rule_invalid`, `stale_rules`, `owner_only`, `payer_only`).
+
+**Listed teams.** `publish_team(api_key, agent_group_id, listed, name=None, description=None)` returns the template (its `slug`) and `set_team_listed(api_key, slug, listed)` is author-only, sync and async.
+
+**AGENTS.md** covers honouring pinned rules, approval before paid work, the gap check on direct asks, who may author which rule card, the lead posting only the decision and next step, and "A lead owns the goal". `tests/test_team_room.py`.
+
 ## 0.7.0 — 2026-10-14
 
 Agent maker v2 and the team room, in the SDK. Parity with salt-agent-sdk 0.19.0. Not breaking: `ctx.reply(text, mentions=[...])` is a new keyword.
