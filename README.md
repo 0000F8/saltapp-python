@@ -68,6 +68,8 @@ async def main():
     @agent.on_message
     async def on_message(ctx):
         await ctx.reply(f"You said: {ctx.text}")
+        # The reply is linked to the message it answers. Opt out with
+        # ctx.reply(text, reply_to=None), or link another message with reply_to="<id>".
 
     stop = asyncio.Event()
     socket = asyncio.create_task(agent.run_socket_async(stop=stop))  # receives the answer below

@@ -58,6 +58,7 @@ _APPROVE_YES_RE = _re.compile(r"^(y|yes)[.!]?$", _re.IGNORECASE)
 # answers by @handle, same as salt-agent-sdk's makeReply -- being spoken to
 # by name is how a person tells which of several messages a reply is for.
 _MENTION_RE_TEMPLATE = r"(^|\s)@{handle}(?![\w.-])"
+_DEFAULT_REPLY_TO: Any = object()  # sentinel: ctx.reply links the handled message unless told otherwise
 
 MAX_AGENT_TO_AGENT_REPLIES_PER_CHAT = 2
 CONSULT_RUNAWAY_LIMIT = 20
@@ -443,17 +444,29 @@ class MessageContext(_BaseContext):
             raise ValueError("this message has no message_id to react to")
         return await self.agent.client.react(self.agent.identity.api_key, self.message_id, emoji)
 
-    async def reply(self, text: str, *, mentions: Optional[list[str]] = None) -> None:
-        """Post `text` into the chat. `mentions` (user ids) are who this reply @-mentions -- Salt only sees
-        ciphertext, so an "@handle" in the body notifies nobody by itself; the ids are what wake an agent in a
-        group. When given they replace the automatic "@sender" addressing and the text is posted as written, so
-        write the "@handle" yourself (a team lead waking a member, a member waking the lead)."""
+    async def reply(
+        self, text: str, *, mentions: Optional[list[str]] = None, reply_to: Any = _DEFAULT_REPLY_TO
+    ) -> None:
+        """Post `text` into the chat. By default the reply is LINKED to the message being handled
+        (`message_id`): Salt shows that message quoted above the reply, so a person who sent several messages
+        can tell which one is being answered. `reply_to=None` opts out (a plain, unlinked message);
+        `reply_to=<message id>` links a different message of the same chat (salt-api drops an id that is not in
+        the chat).
+
+        `mentions` (user ids) are who this reply @-mentions -- Salt only sees ciphertext, so an "@handle" in the
+        body notifies nobody by itself; the ids are what wake an agent in a group. When given they replace the
+        automatic "@sender" addressing and the text is posted as written, so write the "@handle" yourself (a
+        team lead waking a member, a member waking the lead)."""
+        link = self.message_id if reply_to is _DEFAULT_REPLY_TO else reply_to
         if mentions:
             if self.encrypted:
-                await self.agent.client.send_message(self.agent.identity, self.chat_id, text, mentions=list(mentions))
+                await self.agent.client.send_message(
+                    self.agent.identity, self.chat_id, text, mentions=list(mentions), reply_to_message_id=link
+                )
             else:
                 await self.agent.client.post_plain_message(
-                    self.agent.identity.api_key, self.chat_id, text, mentions=list(mentions)
+                    self.agent.identity.api_key, self.chat_id, text, mentions=list(mentions),
+                    reply_to_message_id=link,
                 )
             return
         addressee = self.sender if self.sender.get("account_type") != "Agent" else None
@@ -469,12 +482,14 @@ class MessageContext(_BaseContext):
             else:
                 mentions = None
         if self.encrypted:
-            await self.agent.client.send_message(self.agent.identity, self.chat_id, outgoing, mentions=mentions)
+            await self.agent.client.send_message(
+                self.agent.identity, self.chat_id, outgoing, mentions=mentions, reply_to_message_id=link
+            )
         else:
             # Open room: plain text, no PGP -- see
             # AsyncSaltClient.post_plain_message.
             await self.agent.client.post_plain_message(
-                self.agent.identity.api_key, self.chat_id, outgoing, mentions=mentions
+                self.agent.identity.api_key, self.chat_id, outgoing, mentions=mentions, reply_to_message_id=link
             )
 
 

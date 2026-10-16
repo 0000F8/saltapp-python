@@ -36,7 +36,7 @@ def make_agent(keypair, handler=None, *, agent_id="self-agent") -> Agent:
 
 def message_event(
     *, chat_id="c1", sender_id="human-1", sender_account_type="User", message,
-    encrypted=None, mentions=None, chat_meta=None, delivered_because=None,
+    encrypted=None, mentions=None, chat_meta=None, delivered_because=None, message_id=None,
 ):
     body: dict = {
         "chat_id": chat_id,
@@ -44,6 +44,8 @@ def message_event(
         "user": {"id": sender_id, "account_type": sender_account_type, "username": "someone"},
         "mentions": mentions or [],
     }
+    if message_id is not None:
+        body["message_id"] = message_id
     if encrypted is not None:
         body["encrypted"] = encrypted
     if delivered_because is not None:
@@ -277,3 +279,50 @@ async def test_reply_with_explicit_mentions_in_an_encrypted_room_still_encrypts(
 
     assert posted["body"]["message"].startswith("-----BEGIN PGP MESSAGE")
     assert posted["body"]["mentions"] == ["lead-id"]
+
+
+def _encrypted_world(keypair_a):
+    posted = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/messages"):
+            posted.append(json.loads(request.content))
+            return httpx.Response(200, json={"id": "m1"})
+        return httpx.Response(200, json={
+            "session": {"users": [
+                {"id": "u1", "public_key": keypair_a.public_key, "account_type": "User"},
+                {"id": "agent-1", "public_key": keypair_a.public_key, "account_type": "Agent"},
+            ]}
+        })
+
+    return posted, make_agent(keypair_a, handler)
+
+
+@pytest.mark.asyncio
+async def test_reply_links_the_message_it_answers_by_default(keypair_a):
+    posted, agent = _encrypted_world(keypair_a)
+    event = message_event(message=crypto.encrypt_for("hi", [keypair_a.public_key]), encrypted=True, message_id="m-77")
+    mid = "m-77"
+
+    @agent.on_message
+    async def on_message(ctx):
+        await ctx.reply("linked")
+        await ctx.reply("unlinked", reply_to=None)
+        await ctx.reply("other", reply_to="m-12")
+        await ctx.reply("@x, mention", mentions=["lead-id"])
+
+    await agent.dispatch(event)
+    assert [b.get("reply_to_message_id") for b in posted] == [mid, None, "m-12", mid]
+
+
+@pytest.mark.asyncio
+async def test_open_room_reply_links_the_message_too(keypair_a):
+    posted, agent = _encrypted_world(keypair_a)
+    event = message_event(message="hi", encrypted=False, message_id="m-78")
+
+    @agent.on_message
+    async def on_message(ctx):
+        await ctx.reply("hello")
+
+    await agent.dispatch(event)
+    assert posted[0]["reply_to_message_id"] == "m-78"

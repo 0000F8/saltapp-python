@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.0 — 2026-10-15
+
+Replies answer the message they answer. Parity with salt-agent-sdk 0.21.0. Not breaking.
+
+**Replies link the message they answer, by default.** `ctx.reply(text)` on `MessageContext` now posts with `reply_to_message_id` set to the handled message (`ctx.message_id`), so Salt shows it quoted above the reply and a person who sent several messages can tell which one is being answered. Opt out per reply with `ctx.reply(text, reply_to=None)`; `reply_to="<message id>"` links a different message of the same chat; `mentions=[...]` still works alongside. Chat-opened, hand-off, card and app contexts answer no message and are unchanged. `post_message` / `send_message` / `post_plain_message` keep `reply_to_message_id` as an explicit keyword and default nothing. salt-api drops an id that is not in the chat, so a wrong id costs the link, never the message. `tests/test_agent_crypto.py`.
+
 ## 0.8.0 — 2026-10-15
 
 Pinned team rules, approval before paid work, listed teams, and the lead's way of working. Parity with salt-agent-sdk 0.20.0. Not breaking.
