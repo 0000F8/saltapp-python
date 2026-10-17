@@ -261,7 +261,7 @@ A refusal caused by missing authority names the grant that would unlock it. Do n
 
 ```python
 try:
-    client.post_to_profile(api_key, text="Weekly update")   # refused: no profile.post yet
+    client._request("POST", "/api/v1/profile/posts", api_key, {"text": "Weekly update"})   # any call refused for missing authority
 except SaltApiError as exc:
     if exc.grant and exc.ask:
         parked[token] = {"step": "post weekly update"}      # remember what to resume
