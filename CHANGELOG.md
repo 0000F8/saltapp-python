@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0 — 2026-10-17
+
+Ask for what's required. Parity with salt-agent-sdk 0.24.0 (`worktrees/AUTONOMY_CONTRACT.md` A and D). Not breaking.
+
+- **Refusal envelope.** `SaltApiError.grant` (`{capability, selector, mode, constraints?}`) and `.ask` (`{method, path, body}`, a ready proposal) are set when a refusal names the grant that would unlock the call; `None` otherwise. `.ask` is absent when only the owner can decide (a spending freeze).
+- **`request_grant(api_key, *, grantor_id, capabilities, reason=None, duration_days=None, estimated_cost=None, resume_token=None, chat_id=None, label=None)`** (`POST /api/v1/mandates`) and **`check_grant(api_key, capability)`** (`GET /api/v1/mandates/check`), sync and async. `duration_days` becomes `expires_at`. A 429 `ask_limit` raises `SaltApiError` with `retry_after`.
+- **`Agent.on_grant_decided`** / `GrantDecidedContext` (`.approved`, `.resume_token`, `.capabilities`, `.reason`, `.mandate`, `.exercise`, `.body`): fires on `mandate_activated` (to the grantee) and `approval_decided`, beside `on_mandate_activated` / `on_approval_decided`. `resume_token` and `reason` are read from the event body first, then the mandate or exercise; confirm against the deployed payload.
+- New agent-reach capabilities to ask for: `profile.post`, `wake.repeat`, `room.create`, `outreach.request` (capabilities are plain strings).
+- **`X-Salt-Client: saltapp-python/<version>`** on every API request. `saltapp._version` holds the version.
+- `tests/test_grant_asks.py`.
+
 ## 0.10.0 — 2026-10-17
 
 Send guard (parity with salt-agent-sdk key-reset work). `send_message` (sync and async, so `ctx.reply()` too) sends `recipient_fingerprints` and `sender_fingerprint`, and on a 409 `stale_recipient_keys` encrypts to the members the refusal carries and resends once. `post_message` takes both as keywords. New `Agent.on_member_key_changed` / `MemberKeyChangedContext`. `tests/test_send_guard.py`.

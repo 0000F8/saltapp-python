@@ -41,6 +41,13 @@ class SaltApiError(Exception):
         # Salt's machine-readable refusal code ({"error": ..., "code": ...}), when the body carries one.
         code = body.get("code") if isinstance(body, dict) else None
         self.code: str | None = code if isinstance(code, str) else None
+        # The refusal envelope: `grant` names what would unlock a refused call ({capability, selector, mode,
+        # constraints?}) and `ask` is a ready `POST /api/v1/mandates` request for it (absent when only the owner
+        # can decide, e.g. a spending freeze). Pass `ask["body"]` to `request_grant`.
+        grant = body.get("grant") if isinstance(body, dict) else None
+        ask = body.get("ask") if isinstance(body, dict) else None
+        self.grant: dict[str, Any] | None = grant if isinstance(grant, dict) and isinstance(grant.get("capability"), str) else None
+        self.ask: dict[str, Any] | None = ask if isinstance(ask, dict) and isinstance(ask.get("path"), str) else None
 
 
 RECIPIENT_CONTACTS_ONLY = "recipient_contacts_only"

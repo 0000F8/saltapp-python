@@ -14,7 +14,7 @@ counterpart, salt-agent-sdk.
 
 from __future__ import annotations
 
-__version__ = "0.10.0"
+from saltapp._version import __version__
 
 from saltapp.agent import Agent, AskResult, AskTimeout
 from saltapp.chat_privacy import is_private_chat

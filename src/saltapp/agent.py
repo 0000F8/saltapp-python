@@ -613,6 +613,42 @@ class ApprovalDecidedContext:
         self.exercise = exercise
 
 
+class GrantDecidedContext:
+    """An ask this agent filed with `client.request_grant` was decided
+    (`on_grant_decided`). Fires on `mandate_activated` (approved, to the
+    grantee) and on `approval_decided` (approved or declined). Use
+    `resume_token` to find the parked step: on approval continue it, on
+    decline change strategy. `body` is the event verbatim."""
+
+    def __init__(self, agent: "Agent", body: dict[str, Any], approved: bool) -> None:
+        self.agent = agent
+        self.body = body
+        self.approved = approved
+        mandate = body.get("mandate") if isinstance(body.get("mandate"), dict) else None
+        exercise = body.get("exercise") if isinstance(body.get("exercise"), dict) else None
+        self.mandate = mandate
+        self.exercise = exercise
+
+        def pick(key: str) -> Any:
+            for src in (body, mandate, exercise):
+                if src and src.get(key) is not None:
+                    return src[key]
+            return None
+
+        token = pick("resume_token")
+        reason = pick("reason")
+        self.resume_token: str | None = token if isinstance(token, str) else None
+        self.reason: str | None = reason if isinstance(reason, str) else None
+        caps = pick("capabilities")
+        if caps is None and exercise and exercise.get("capability"):
+            caps = [exercise["capability"]]
+        self.capabilities: list[str] = [
+            c if isinstance(c, str) else c.get("capability")
+            for c in (caps or [])
+            if isinstance(c, str) or (isinstance(c, dict) and isinstance(c.get("capability"), str))
+        ]
+
+
 class DeviceSessionEndedContext:
     """A device session this agent ran just ended (`device_session_ended`;
     fires for EVERY `end_reason` -- check `lost_contact`, true for
@@ -777,6 +813,14 @@ class Agent:
         """This agent made the original ask-mode call and it was just
         decided. `ctx`: `ApprovalDecidedContext` (`.exercise`)."""
         self._handlers["approval_decided"] = fn
+        return fn
+
+    def on_grant_decided(self, fn: Handler) -> Handler:
+        """An ask this agent filed with `client.request_grant` was decided.
+        `ctx`: `GrantDecidedContext` (`.approved`, `.resume_token`,
+        `.capabilities`, `.reason`). Fires beside `on_mandate_activated` /
+        `on_approval_decided`."""
+        self._handlers["grant_decided"] = fn
         return fn
 
     def on_device_session_ended(self, fn: Handler) -> Handler:
@@ -1027,7 +1071,20 @@ class Agent:
     async def _handle_mandate_lifecycle(self, event_type: str, body: dict[str, Any]) -> None:
         handler = self._handlers.get(event_type)
         mandate = body.get("mandate")
-        if handler is None or not isinstance(mandate, dict):
+        if not isinstance(mandate, dict):
+            return
+        grant_handler = self._handlers.get("grant_decided")
+        grantee = mandate.get("grantee")
+        grantee_id = grantee.get("id") if isinstance(grantee, dict) else None
+        if (
+            event_type == "mandate_activated"
+            and grant_handler is not None
+            and grantee_id is not None
+            and self.identity.agent_id
+            and str(grantee_id).lower() == self.identity.agent_id.lower()
+        ):
+            await grant_handler(GrantDecidedContext(self, body, True))
+        if handler is None:
             return
         await handler(MandateLifecycleContext(self, mandate))
 
@@ -1058,7 +1115,12 @@ class Agent:
     async def _handle_approval_decided(self, body: dict[str, Any]) -> None:
         handler = self._handlers.get("approval_decided")
         exercise = body.get("exercise")
-        if handler is None or not isinstance(exercise, dict):
+        if not isinstance(exercise, dict):
+            return
+        grant_handler = self._handlers.get("grant_decided")
+        if grant_handler is not None:
+            await grant_handler(GrantDecidedContext(self, body, exercise.get("decision") == "approved"))
+        if handler is None:
             return
         await handler(ApprovalDecidedContext(self, exercise))
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 import base64
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 from urllib.parse import quote, urlencode
 
@@ -22,6 +22,7 @@ import httpx
 
 from saltapp import crypto
 from saltapp.errors import SaltApiError, api_error
+from saltapp._version import __version__
 from saltapp.identity import Identity
 
 _JSON = dict[str, Any]
@@ -45,8 +46,36 @@ def _rules_of(listing: dict[str, Any], group_id: str) -> list[dict[str, Any]]:
     return []
 
 
+CLIENT_HEADER = "X-Salt-Client"
+CLIENT_HEADER_VALUE = f"saltapp-python/{__version__}"
 ACT_FOR_HEADER = "X-Salt-Act-For"
 MANDATE_HEADER = "X-Salt-Mandate"
+
+
+def _grant_body(
+    grantor_id: str,
+    capabilities: list[dict[str, Any]],
+    reason: str | None,
+    duration_days: float | None,
+    estimated_cost: dict[str, Any] | None,
+    resume_token: str | None,
+    chat_id: str | None,
+    label: str | None,
+) -> dict[str, Any]:
+    body: dict[str, Any] = {"grantor_id": grantor_id, "capabilities": capabilities}
+    if label is not None:
+        body["label"] = label
+    if reason is not None:
+        body["reason"] = reason
+    if estimated_cost is not None:
+        body["estimated_cost"] = estimated_cost
+    if resume_token is not None:
+        body["resume_token"] = resume_token
+    if chat_id is not None:
+        body["chat_id"] = chat_id
+    if duration_days is not None:
+        body["expires_at"] = (datetime.now(timezone.utc) + timedelta(days=duration_days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return body
 
 
 def _cache_bust(path: str) -> str:
@@ -154,7 +183,7 @@ class SaltClient:
         # unencrypted room (see get_chat) is expressed. Every call that
         # actually needs auth still fails the normal way (401/403) when the
         # header is missing.
-        headers = {"api-key": api_key} if api_key else {}
+        headers = {"api-key": api_key, CLIENT_HEADER: CLIENT_HEADER_VALUE} if api_key else {CLIENT_HEADER: CLIENT_HEADER_VALUE}
         if extra_headers:
             headers.update(extra_headers)
         if idempotency_key:
@@ -380,7 +409,7 @@ class SaltClient:
 
     def get_attachment(self, api_key: str, message_id: str) -> bytes:
         url = f"{self.host}/api/v1/messages/{message_id}/attachment"
-        response = self.http.get(url, headers={"api-key": api_key})
+        response = self.http.get(url, headers={"api-key": api_key, CLIENT_HEADER: CLIENT_HEADER_VALUE})
         if response.status_code >= 400:
             raise SaltApiError("GET", url, response.status_code, _parse_error_body(response))
         return response.content
@@ -787,6 +816,35 @@ class SaltClient:
         `standing`, `expires_at`, `parent_id`, `chat_id`)."""
         return self._request("POST", "/api/v1/mandates", api_key, params)
 
+    def request_grant(
+        self,
+        api_key: str,
+        *,
+        grantor_id: str,
+        capabilities: list[dict[str, Any]],
+        reason: str | None = None,
+        duration_days: float | None = None,
+        estimated_cost: dict[str, Any] | None = None,
+        resume_token: str | None = None,
+        chat_id: str | None = None,
+        label: str | None = None,
+    ) -> dict[str, Any]:
+        """File ONE ask with the account that decides (usually your owner): the
+        capabilities you need, your reason, a budget and a duration. Several
+        capabilities in one call is a "strategy"; the owner sees one card. Start
+        from a refusal: `exc.ask["body"]` carries `grantor_id` and `capabilities`.
+        `reason` is your words, shown to the owner (up to 1000 characters).
+        `estimated_cost` is `{"amount", "currency", "period"}`. `resume_token`
+        is opaque (up to 200 characters) and comes back on `on_grant_decided`.
+        A 429 `ask_limit` raises `SaltApiError` with `retry_after`."""
+        return self._request("POST", "/api/v1/mandates", api_key, _grant_body(
+            grantor_id, capabilities, reason, duration_days, estimated_cost, resume_token, chat_id, label
+        ))
+
+    def check_grant(self, api_key: str, capability: str) -> dict[str, Any]:
+        """Do you already hold this capability? `{allowed, mandate_id?, mode, constraints}`."""
+        return self._request("GET", f"/api/v1/mandates/check?capability={quote(capability, safe='')}", api_key)
+
     def update_mandate(self, api_key: str, mandate_id: str, params: _JSON) -> dict[str, Any]:
         """New version, compare-and-swap on `params["version"]` -- a 409
         SaltApiError means it changed under you; re-fetch with
@@ -965,7 +1023,7 @@ class AsyncSaltClient:
         url = f"{self.host}{path}"
         # See SaltClient._request's comment: a falsy api_key sends no
         # api-key header, the anonymous-read shape get_chat relies on.
-        headers = {"api-key": api_key} if api_key else {}
+        headers = {"api-key": api_key, CLIENT_HEADER: CLIENT_HEADER_VALUE} if api_key else {CLIENT_HEADER: CLIENT_HEADER_VALUE}
         if extra_headers:
             headers.update(extra_headers)
         if idempotency_key:
@@ -1113,7 +1171,7 @@ class AsyncSaltClient:
 
     async def get_attachment(self, api_key: str, message_id: str) -> bytes:
         url = f"{self.host}/api/v1/messages/{message_id}/attachment"
-        response = await self.http.get(url, headers={"api-key": api_key})
+        response = await self.http.get(url, headers={"api-key": api_key, CLIENT_HEADER: CLIENT_HEADER_VALUE})
         if response.status_code >= 400:
             raise SaltApiError("GET", url, response.status_code, _parse_error_body(response))
         return response.content
@@ -1408,6 +1466,35 @@ class AsyncSaltClient:
     async def propose_mandate(self, api_key: str, params: _JSON) -> dict[str, Any]:
         """See SaltClient.propose_mandate."""
         return await self._request("POST", "/api/v1/mandates", api_key, params)
+
+    async def request_grant(
+        self,
+        api_key: str,
+        *,
+        grantor_id: str,
+        capabilities: list[dict[str, Any]],
+        reason: str | None = None,
+        duration_days: float | None = None,
+        estimated_cost: dict[str, Any] | None = None,
+        resume_token: str | None = None,
+        chat_id: str | None = None,
+        label: str | None = None,
+    ) -> dict[str, Any]:
+        """File ONE ask (see SaltClient.request_grant) with the account that decides (usually your owner): the
+        capabilities you need, your reason, a budget and a duration. Several
+        capabilities in one call is a "strategy"; the owner sees one card. Start
+        from a refusal: `exc.ask["body"]` carries `grantor_id` and `capabilities`.
+        `reason` is your words, shown to the owner (up to 1000 characters).
+        `estimated_cost` is `{"amount", "currency", "period"}`. `resume_token`
+        is opaque (up to 200 characters) and comes back on `on_grant_decided`.
+        A 429 `ask_limit` raises `SaltApiError` with `retry_after`."""
+        return await self._request("POST", "/api/v1/mandates", api_key, _grant_body(
+            grantor_id, capabilities, reason, duration_days, estimated_cost, resume_token, chat_id, label
+        ))
+
+    async def check_grant(self, api_key: str, capability: str) -> dict[str, Any]:
+        """Do you already hold this capability? `{allowed, mandate_id?, mode, constraints}`."""
+        return await self._request("GET", f"/api/v1/mandates/check?capability={quote(capability, safe='')}", api_key)
 
     async def update_mandate(self, api_key: str, mandate_id: str, params: _JSON) -> dict[str, Any]:
         """See SaltClient.update_mandate."""
