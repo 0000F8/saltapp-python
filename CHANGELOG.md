@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+Send guard (parity with salt-agent-sdk key-reset work). `send_message` (sync and async, so `ctx.reply()` too) sends `recipient_fingerprints` and `sender_fingerprint`, and on a 409 `stale_recipient_keys` encrypts to the members the refusal carries and resends once. `post_message` takes both as keywords. New `Agent.on_member_key_changed` / `MemberKeyChangedContext`. `tests/test_send_guard.py`.
+
 ## 0.9.0 — 2026-10-15
 
 Replies answer the message they answer. Parity with salt-agent-sdk 0.21.0. Not breaking.

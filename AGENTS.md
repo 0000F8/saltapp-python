@@ -877,3 +877,15 @@ not all nine at once) before running these.
   `SaltClient.rotate_keys(api_key, public_key)` if this comes up again;
   it wasn't added here to keep this pass's blast radius to what the task
   actually needed.
+
+## Send guard and key resets (KEY_RESET_DESIGN.md section 7)
+
+`send_message` (sync and async; so `ctx.reply()` too) reads the chat's members at send time and posts
+`recipient_fingerprints` ({member user id: the `public_fingerprint` it encrypted to}) and
+`sender_fingerprint` (your own key). If any recipient lacks a fingerprint the guard is left out (a partial
+map would count the missing member as stale). A 409 `{"code": "stale_recipient_keys", "members": [...]}`
+means someone reset their chat key since you read the members: the client encrypts to those members and
+sends ONCE more; a second refusal raises `SaltApiError`. Branch on `err.body["code"]`, never on the status
+alone. `@agent.on_member_key_changed` (`MemberKeyChangedContext`: `user_id`, `key_generation`,
+`public_fingerprint`) is for a cache of your own recipient keys; the SDK keeps none. If you call
+`post_message` yourself, pass `recipient_fingerprints=` and `sender_fingerprint=`.

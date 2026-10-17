@@ -504,6 +504,18 @@ class CardInteractionContext(_BaseContext):
         self.blocks = blocks
 
 
+class MemberKeyChangedContext:
+    """Someone you share a chat with reset their chat key. `public_fingerprint` is the fingerprint of
+    their new active key: what the server expects a message to have been encrypted to."""
+
+    def __init__(self, agent: "Agent", *, user_id: str, key_generation: int, public_fingerprint: str, body: dict[str, Any]) -> None:
+        self.agent = agent
+        self.user_id = user_id
+        self.key_generation = key_generation
+        self.public_fingerprint = public_fingerprint
+        self.body = body
+
+
 class ChatOpenedContext(_BaseContext):
     def __init__(
         self, agent: "Agent", *, chat_id: str, chat: dict[str, Any], opened_by: dict[str, Any], members: list[dict[str, Any]]
@@ -716,6 +728,14 @@ class Agent:
         self._handlers["chat_opened"] = fn
         return fn
 
+    def on_member_key_changed(self, fn: Handler) -> Handler:
+        """A member of a chat you share reset their chat key (`member_key_changed`). The handler gets a
+        `MemberKeyChangedContext`. The SDK caches no recipient keys (`send_message` reads the members at
+        send time), so this is for a cache of your own: drop that user's key and fetch
+        `client.get_chat_members` again before the next send."""
+        self._handlers["member_key_changed"] = fn
+        return fn
+
     def on_invoice_paid(self, fn: Handler) -> Handler:
         self._handlers["invoice_paid"] = fn
         return fn
@@ -821,6 +841,8 @@ class Agent:
                 await self._handle_card_interaction(event.body)
             elif event.type == "chat_opened":
                 await self._handle_chat_opened(event.body)
+            elif event.type == "member_key_changed":
+                await self._handle_member_key_changed(event.body)
             elif event.type == "invoice_paid":
                 await self._handle_invoice_paid(event.body)
             elif event.type == "handoff_confirmed":
@@ -974,6 +996,15 @@ class Agent:
             opened_by=body.get("opened_by") or {}, members=body.get("members") or [],
         )
         await handler(ctx)
+
+    async def _handle_member_key_changed(self, body: dict[str, Any]) -> None:
+        handler = self._handlers.get("member_key_changed")
+        if handler is None or body.get("user_id") is None:
+            return
+        await handler(MemberKeyChangedContext(
+            self, user_id=body["user_id"], key_generation=int(body.get("key_generation") or 0),
+            public_fingerprint=str(body.get("public_fingerprint") or ""), body=body,
+        ))
 
     async def _handle_invoice_paid(self, body: dict[str, Any]) -> None:
         handler = self._handlers.get("invoice_paid")

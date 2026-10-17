@@ -34,7 +34,7 @@ DELIVERY_ID_HEADER = "X-Salt-Delivery-Id"
 
 DEFAULT_TOLERANCE_SECONDS = 300
 
-EventType = str  # "message" | "card_interaction" | "invoice_paid" | "chat_opened" | "handoff_confirmed" | "handoff_received" | "mandate_offered" | "mandate_activated" | "mandate_paused" | "mandate_revoked" | "approval_requested" | "approval_decided" | "device_session_ended" | "device_back" | "unknown"
+EventType = str  # "message" | "card_interaction" | "invoice_paid" | "chat_opened" | "member_key_changed" | "handoff_confirmed" | "handoff_received" | "mandate_offered" | "mandate_activated" | "mandate_paused" | "mandate_revoked" | "approval_requested" | "approval_decided" | "device_session_ended" | "device_back" | "unknown"
 
 # Mandates R2 (salt-api's MandateEventJob): same rail as card_interaction/
 # invoice_paid -- a per-recipient plaintext delivery, always carrying an
@@ -147,7 +147,7 @@ def classify(body: dict[str, Any]) -> EventType:
     field when present (typed events), else shape-sniffed for the message
     event, which carries no `type` at all."""
     explicit = body.get("type")
-    if explicit in ("card_interaction", "invoice_paid", "chat_opened", "handoff_confirmed", "handoff_received"):
+    if explicit in ("card_interaction", "invoice_paid", "chat_opened", "member_key_changed", "handoff_confirmed", "handoff_received"):
         return explicit
     if explicit in _MANDATE_EVENT_TYPES:
         return explicit

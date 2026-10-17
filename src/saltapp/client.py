@@ -94,13 +94,25 @@ def is_asked(value: Any) -> bool:
     return isinstance(value, dict) and value.get("asked") is True
 
 
-def _encryption_recipients(members: Sequence[Mapping[str, Any]], self_agent_id: str) -> list[str]:
+def _encryption_targets(
+    members: Sequence[Mapping[str, Any]], self_agent_id: str
+) -> tuple[list[str], dict[str, str] | None]:
+    """The recipient keys plus the send guard's `recipient_fingerprints` (user id -> the
+    fingerprint of the key we encrypt to). The fingerprints are None unless every recipient
+    carries one: a partial map would count the missing members as stale."""
     self_id = str(self_agent_id).lower()
-    return [
-        m["public_key"]
-        for m in members
-        if str(m.get("id", "")).lower() != self_id and m.get("public_key")
-    ]
+    others = [m for m in members if str(m.get("id", "")).lower() != self_id and m.get("public_key")]
+    prints = {str(m["id"]): str(m["public_fingerprint"]).upper() for m in others if m.get("public_fingerprint")}
+    return [m["public_key"] for m in others], (prints if others and len(prints) == len(others) else None)
+
+
+def _stale_recipient_members(err: SaltApiError) -> list[dict[str, Any]] | None:
+    """The current members a 409 `stale_recipient_keys` refusal carries, or None for any other error."""
+    body = err.body
+    if err.status != 409 or not isinstance(body, dict) or body.get("code") != "stale_recipient_keys":
+        return None
+    members = body.get("members")
+    return members if isinstance(members, list) else None
 
 
 class SaltClient:
@@ -384,6 +396,8 @@ class SaltClient:
         mentions: list[str] | None = None,
         quiet: bool = False,
         reply_to_message_id: str | None = None,
+        recipient_fingerprints: Mapping[str, str] | None = None,
+        sender_fingerprint: str | None = None,
     ) -> dict[str, Any]:
         """Post an already-PGP-encrypted reply into a chat. `message` is the
         ciphertext every human recipient reads; `sender_message` is the copy
@@ -403,6 +417,10 @@ class SaltClient:
             body["quiet"] = True
         if reply_to_message_id:
             body["reply_to_message_id"] = reply_to_message_id
+        if recipient_fingerprints:
+            body["recipient_fingerprints"] = dict(recipient_fingerprints)
+        if sender_fingerprint:
+            body["sender_fingerprint"] = sender_fingerprint
         return self._request("POST", "/api/v1/messages", api_key, body)
 
     def send_message(
@@ -420,7 +438,7 @@ class SaltClient:
         (everyone but the sender) plus a copy for the sender's own key, and
         posts it. Raises SaltApiError if no recipient has a public key."""
         members = self.get_chat_members(identity.api_key, chat_id)
-        recipient_keys = _encryption_recipients(members, identity.agent_id)
+        recipient_keys, prints = _encryption_targets(members, identity.agent_id)
         if not recipient_keys:
             raise SaltApiError(
                 "POST", f"{self.host}/api/v1/messages", 0,
@@ -428,10 +446,27 @@ class SaltClient:
             )
         encrypted = crypto.encrypt_for(text, recipient_keys)
         sender_copy = crypto.encrypt_for(text, [identity.public_key])
-        return self.post_message(
-            identity.api_key, chat_id, encrypted, sender_copy, mentions=mentions, quiet=quiet,
-            reply_to_message_id=reply_to_message_id,
-        )
+        sender_print = crypto.fingerprint_of(identity.public_key).upper() if prints else None
+        try:
+            return self.post_message(
+                identity.api_key, chat_id, encrypted, sender_copy, mentions=mentions,
+                quiet=quiet, reply_to_message_id=reply_to_message_id,
+                recipient_fingerprints=prints, sender_fingerprint=sender_print,
+            )
+        except SaltApiError as err:
+            # A member reset their chat key since we read the members: the refusal carries the current
+            # ones. Encrypt to those and send ONCE more; a second refusal propagates (no loop).
+            fresh = _stale_recipient_members(err)
+            if fresh is None:
+                raise
+            recipient_keys, prints = _encryption_targets(fresh, identity.agent_id)
+            if not recipient_keys:
+                raise
+            return self.post_message(
+                identity.api_key, chat_id, crypto.encrypt_for(text, recipient_keys), sender_copy, mentions=mentions,
+                quiet=quiet, reply_to_message_id=reply_to_message_id,
+                recipient_fingerprints=prints, sender_fingerprint=sender_print if prints else None,
+            )
 
     def post_plain_message(
         self,
@@ -1094,6 +1129,8 @@ class AsyncSaltClient:
         mentions: list[str] | None = None,
         quiet: bool = False,
         reply_to_message_id: str | None = None,
+        recipient_fingerprints: Mapping[str, str] | None = None,
+        sender_fingerprint: str | None = None,
     ) -> dict[str, Any]:
         body: _JSON = {"chat_id": chat_id, "message": message}
         if sender_message is not None:
@@ -1106,6 +1143,10 @@ class AsyncSaltClient:
             body["quiet"] = True
         if reply_to_message_id:
             body["reply_to_message_id"] = reply_to_message_id
+        if recipient_fingerprints:
+            body["recipient_fingerprints"] = dict(recipient_fingerprints)
+        if sender_fingerprint:
+            body["sender_fingerprint"] = sender_fingerprint
         return await self._request("POST", "/api/v1/messages", api_key, body)
 
     async def send_message(
@@ -1119,7 +1160,7 @@ class AsyncSaltClient:
         reply_to_message_id: str | None = None,
     ) -> dict[str, Any]:
         members = await self.get_chat_members(identity.api_key, chat_id)
-        recipient_keys = _encryption_recipients(members, identity.agent_id)
+        recipient_keys, prints = _encryption_targets(members, identity.agent_id)
         if not recipient_keys:
             raise SaltApiError(
                 "POST", f"{self.host}/api/v1/messages", 0,
@@ -1127,10 +1168,27 @@ class AsyncSaltClient:
             )
         encrypted = crypto.encrypt_for(text, recipient_keys)
         sender_copy = crypto.encrypt_for(text, [identity.public_key])
-        return await self.post_message(
-            identity.api_key, chat_id, encrypted, sender_copy, mentions=mentions, quiet=quiet,
-            reply_to_message_id=reply_to_message_id,
-        )
+        sender_print = crypto.fingerprint_of(identity.public_key).upper() if prints else None
+        try:
+            return await self.post_message(
+                identity.api_key, chat_id, encrypted, sender_copy, mentions=mentions,
+                quiet=quiet, reply_to_message_id=reply_to_message_id,
+                recipient_fingerprints=prints, sender_fingerprint=sender_print,
+            )
+        except SaltApiError as err:
+            # A member reset their chat key since we read the members: the refusal carries the current
+            # ones. Encrypt to those and send ONCE more; a second refusal propagates (no loop).
+            fresh = _stale_recipient_members(err)
+            if fresh is None:
+                raise
+            recipient_keys, prints = _encryption_targets(fresh, identity.agent_id)
+            if not recipient_keys:
+                raise
+            return await self.post_message(
+                identity.api_key, chat_id, crypto.encrypt_for(text, recipient_keys), sender_copy, mentions=mentions,
+                quiet=quiet, reply_to_message_id=reply_to_message_id,
+                recipient_fingerprints=prints, sender_fingerprint=sender_print if prints else None,
+            )
 
     async def post_plain_message(
         self,
