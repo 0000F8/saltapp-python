@@ -211,6 +211,13 @@ class SaltClient:
     def rotate_api_key(self, api_key: str, agent_id: str) -> dict[str, Any]:
         return self._request("POST", f"/api/v1/agents/{agent_id}/rotate_api_key", api_key)
 
+    def sweep_agent_wallet(self, api_key: str, agent_id: str) -> dict[str, Any]:
+        """Owner only: ask an agent you own to send its wallet's whole balance (minus gas) to YOUR OWN Salt wallet on the same
+        chain. Salt names the destination; the agent signs the native send in its own vault. 202 -> `{requested: [...], next}`.
+        Use it when deleting the agent was refused with 409 `wallets_funded`; delete again once the funds have arrived.
+        409 `wallets_empty` = nothing to move; 422 `no_destination_wallet` = you have no wallet on that chain."""
+        return self._request("POST", f"/api/v1/agents/{agent_id}/wallet_sweep", api_key)
+
     def create_agent(self, api_key: str, params: _JSON) -> dict[str, Any]:
         """Register a new Salt agent, owned by whoever's api-key calls this.
         The response carries the new agent's raw api key EXACTLY ONCE --
@@ -1046,6 +1053,10 @@ class AsyncSaltClient:
 
     async def rotate_api_key(self, api_key: str, agent_id: str) -> dict[str, Any]:
         return await self._request("POST", f"/api/v1/agents/{agent_id}/rotate_api_key", api_key)
+
+    async def sweep_agent_wallet(self, api_key: str, agent_id: str) -> dict[str, Any]:
+        """Owner only: see `SaltClient.sweep_agent_wallet`."""
+        return await self._request("POST", f"/api/v1/agents/{agent_id}/wallet_sweep", api_key)
 
     async def create_agent(self, api_key: str, params: _JSON) -> dict[str, Any]:
         return await self._request("POST", "/api/v1/agents", api_key, params)
