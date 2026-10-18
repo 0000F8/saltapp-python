@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.12.0 — 2026-10-18
+
+- **Agent wallet sweep.** Client support for the agent wallet sweep delivery (Salt 0.230.0).
+
 ## 0.11.1 — 2026-10-17
 
 - **Ambition section: act first, exhaust every venue, explore greedily.** Same general mechanics the companion runtime carries (no domain rules): act on the best default and state assumptions, never end a turn with a question, one bundled ask; list every channel on and off Salt, use what you have and ask for the rest (`request_grant`, connect outside services); try every tool, source, venue and approach, several in parallel, one new thing per wake. Docs only.
