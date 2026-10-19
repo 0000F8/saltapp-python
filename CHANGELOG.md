@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.0 — 2026-10-19
+
+- **The `advantage:` line of a work report.** DYNAMIC_ADVANTAGE phase 1. `saltapp.work` has `format_advantage` (edges sorted by edge, at most 8, the lowest-n dropped until 4000 characters, phase 2 keys present and empty), `parse_advantage`, `add_advantage_line` and `read_advantage_line`, the same shape salt-agent-sdk 0.26.0 and salt-fe read. This SDK still has no work reporter; the helpers work on a report's plaintext.
+
 ## 0.12.0 — 2026-10-18
 
 - **Agent wallet sweep.** Client support for the agent wallet sweep delivery (Salt 0.230.0).
