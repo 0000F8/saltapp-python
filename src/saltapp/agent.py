@@ -582,6 +582,24 @@ class MandateLifecycleContext:
         self.mandate = mandate
 
 
+class StrategyTunedContext:
+    """The person (the plan's grantor) changed the pace, exploring or kind of goal of a plan you run
+    (`on_strategy_tuned`). Delivered to you only. These settings only tune effort: copy `changes` into your own
+    copy of the plan and use them from your next turn on. `changes` holds only `explore`, `goal_kind` and `pace`
+    (the new values); `strategy` is the whole plan after the change; `body` is the event verbatim."""
+
+    def __init__(self, agent: "Agent", body: dict[str, Any]) -> None:
+        self.agent = agent
+        self.body = body
+        self.mandate_id = body.get("id") if body.get("id") is not None else body.get("mandate_id")
+        strategy = body.get("strategy") if isinstance(body.get("strategy"), dict) else {}
+        self.strategy: dict[str, Any] = strategy
+        self.strategy_id: str = str(body.get("strategy_id") or strategy.get("strategy_id") or "")
+        changes = body.get("changes") if isinstance(body.get("changes"), dict) else {}
+        self.changes: dict[str, Any] = changes
+        self.version = int(body.get("version") or 0)
+
+
 class ApprovalRequestedContext:
     """This agent is the PRINCIPAL of an ask-mode call someone acting for
     it just made, and it's waiting on a decision (e.g. a governance
@@ -802,6 +820,12 @@ class Agent:
         self._handlers["mandate_revoked"] = fn
         return fn
 
+    def on_strategy_tuned(self, fn: Handler) -> Handler:
+        """The person changed pace, exploring or the kind of goal on a plan this agent runs. `ctx`:
+        `StrategyTunedContext` (`.mandate_id`, `.strategy_id`, `.changes`, `.strategy`, `.version`)."""
+        self._handlers["strategy_tuned"] = fn
+        return fn
+
     def on_approval_requested(self, fn: Handler) -> Handler:
         """This agent is the PRINCIPAL of an ask-mode call and is waiting
         on a decision. `ctx`: `ApprovalRequestedContext` (`.exercise`,
@@ -897,6 +921,10 @@ class Agent:
                 await self._handle_mandate_offered(event.body)
             elif event.type in ("mandate_activated", "mandate_paused", "mandate_revoked"):
                 await self._handle_mandate_lifecycle(event.type, event.body)
+            elif event.type == "strategy_tuned":
+                handler = self._handlers.get("strategy_tuned")
+                if handler is not None and (event.body.get("id") or event.body.get("mandate_id")) is not None:
+                    await handler(StrategyTunedContext(self, event.body))
             elif event.type == "approval_requested":
                 await self._handle_approval_requested(event.body)
             elif event.type == "approval_decided":

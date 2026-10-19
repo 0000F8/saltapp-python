@@ -459,7 +459,7 @@ await agent.client.decide_mandate_exercise(owner_api_key, exercise_id, "approve"
 Six webhook/socket events ride the same rail as `card_interaction`/
 `invoice_paid`: `on_mandate_offered` (`ctx.mandate`, `await ctx.accept()`),
 `on_mandate_activated` / `on_mandate_paused` / `on_mandate_revoked`
-(`ctx.mandate`, informational), `on_approval_requested` (reaches this
+(`ctx.mandate`, informational), `on_strategy_tuned` (the person changed pace, exploring or the kind of goal on a plan you run: `ctx.changes`, `ctx.strategy`, `ctx.version`), `on_approval_requested` (reaches this
 agent when it's the mandate's PRINCIPAL -- `ctx.exercise`, `await
 ctx.decide("approve" | "deny", note=None)`), and `on_approval_decided`
 (reaches the DELEGATE that made the original ask-mode call, informational
@@ -547,7 +547,7 @@ await agent.client.clear_chat_subscription(agent.identity.api_key, chat_id)  # b
 | `saltapp.script_job` | `run_script_job(sources=, key=, seen=, post=, compose=None)` -> `ScriptJobResult(fetched, fresh, posted, failed_sources)`, `MemorySeenStore`/`FileSeenStore`, `default_compose`: deterministic-first scheduled work -- see "Scheduled work: a script job", above. |
 | `saltapp.device` | The `[[SALT-DEVICE ...]]` lane envelope (`encode_device_message` / `decode_device_message`, byte-compatible with the TypeScript SDK), the whole-task command (`task_command(goal, done_when=None, max_steps=None, timeout_s=None, *, session, seq)`, `cancel_command`) and `parse_progress` / `parse_task_result`. Grammar only: a full Python device client is a stated gap -- see "Hand a whole task to a computer", below. |
 | `saltapp.chat_privacy` | `is_private_chat(chat, speaker_id, my_id)`: true only for an encrypted, non-public chat of exactly the speaker and this agent with no observer, from Salt's chat record (`client.get_chat`). |
-| `saltapp.agent` | `Agent`: `@agent.on_message` / `on_card_interaction` / `on_chat_opened` / `on_member_key_changed` / `on_invoice_paid` / `on_handoff_confirmed` / `on_handoff_received` / `on_mandate_offered` / `on_mandate_activated` / `on_mandate_paused` / `on_mandate_revoked` / `on_approval_requested` / `on_approval_decided` / `on_device_session_ended` / `on_device_back`, `ctx.reply()` / `post_card()` / `request_payment()` / `ask()` / `approve()`, `run_socket()`, `asgi_app()`. `ctx.encrypted` / `ctx.delivered_because` on `MessageContext` -- see "Open rooms and interests" below; the six mandate events -- see "Acting for someone" above. |
+| `saltapp.agent` | `Agent`: `@agent.on_message` / `on_card_interaction` / `on_chat_opened` / `on_member_key_changed` / `on_invoice_paid` / `on_handoff_confirmed` / `on_handoff_received` / `on_mandate_offered` / `on_mandate_activated` / `on_mandate_paused` / `on_mandate_revoked` / `on_strategy_tuned` / `on_approval_requested` / `on_approval_decided` / `on_device_session_ended` / `on_device_back`, `ctx.reply()` / `post_card()` / `request_payment()` / `ask()` / `approve()`, `run_socket()`, `asgi_app()`. `ctx.encrypted` / `ctx.delivered_because` on `MessageContext` -- see "Open rooms and interests" below; the six mandate events -- see "Acting for someone" above. |
 | `saltapp.integrations.fastapi` / `.flask` | Thin adapters mounting an `Agent` into an app you already have. |
 | `saltapp.integrations.<framework>` | Salt tools + a human-in-the-loop bridge for nine agent frameworks -- see "Integrations" below. |
 

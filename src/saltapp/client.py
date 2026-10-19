@@ -52,6 +52,17 @@ ACT_FOR_HEADER = "X-Salt-Act-For"
 MANDATE_HEADER = "X-Salt-Mandate"
 
 
+def _tune_body(explore: float | None, goal_kind: str | None, pace: str | None, version: int) -> dict[str, Any]:
+    strategy: dict[str, Any] = {}
+    if explore is not None:
+        strategy["explore"] = explore
+    if goal_kind is not None:
+        strategy["goal_kind"] = goal_kind
+    if pace is not None:
+        strategy["pace"] = pace
+    return {"version": version, "strategy": strategy}
+
+
 def _grant_body(
     grantor_id: str,
     capabilities: list[dict[str, Any]],
@@ -858,6 +869,24 @@ class SaltClient:
         `get_mandate` and retry against the new version."""
         return self._request("PATCH", f"/api/v1/mandates/{mandate_id}", api_key, params)
 
+    def tune_strategy(
+        self,
+        api_key: str,
+        mandate_id: str,
+        *,
+        explore: float | None = None,
+        goal_kind: str | None = None,
+        pace: str | None = None,
+        version: int,
+    ) -> dict[str, Any]:
+        """Change the pace, exploring or kind of goal of a RUNNING plan (an active strategy mandate). Only the
+        plan's grantor may, and `version` is the mandate's current one: a 409 means it changed under you, so
+        `get_mandate` and retry. `explore` is 0.05 to 0.5; `goal_kind` and `pace` come from
+        `GET /api/v1/strategies/limits`. Any other strategy key is refused (422 `strategy_not_editable`); a value
+        that already holds changes nothing and bumps no version. The agent that runs the plan hears
+        `strategy_tuned` (`on_strategy_tuned`)."""
+        return self._request("PATCH", f"/api/v1/mandates/{mandate_id}", api_key, _tune_body(explore, goal_kind, pace, version))
+
     def accept_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
         """Grantee accepts an offered mandate (binds its current key
         fingerprint), or the grantor activates one still `proposed` by the
@@ -1510,6 +1539,19 @@ class AsyncSaltClient:
     async def update_mandate(self, api_key: str, mandate_id: str, params: _JSON) -> dict[str, Any]:
         """See SaltClient.update_mandate."""
         return await self._request("PATCH", f"/api/v1/mandates/{mandate_id}", api_key, params)
+
+    async def tune_strategy(
+        self,
+        api_key: str,
+        mandate_id: str,
+        *,
+        explore: float | None = None,
+        goal_kind: str | None = None,
+        pace: str | None = None,
+        version: int,
+    ) -> dict[str, Any]:
+        """See SaltClient.tune_strategy."""
+        return await self._request("PATCH", f"/api/v1/mandates/{mandate_id}", api_key, _tune_body(explore, goal_kind, pace, version))
 
     async def accept_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
         """See SaltClient.accept_mandate."""

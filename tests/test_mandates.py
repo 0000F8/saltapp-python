@@ -15,6 +15,7 @@ from saltapp.agent import (
     ApprovalRequestedContext,
     MandateLifecycleContext,
     MandateOfferedContext,
+    StrategyTunedContext,
     Agent,
 )
 from saltapp.client import ActingSaltClient, AsyncActingSaltClient, AsyncSaltClient, SaltClient, is_asked
@@ -389,3 +390,59 @@ async def test_mandate_events_are_deduped_by_delivery_id_like_every_other_event(
     await agent.dispatch(event)
     await agent.dispatch(event)
     assert seen == ["mandate-1"]
+
+
+def test_classify_strategy_tuned():
+    assert classify({"type": "strategy_tuned", "mandate_id": "mandate-1"}) == "strategy_tuned"
+
+
+@pytest.mark.asyncio
+async def test_strategy_tuned_reaches_its_handler_with_changes_strategy_and_version():
+    agent = make_agent()
+    seen = []
+
+    @agent.on_strategy_tuned
+    async def on_tuned(ctx: StrategyTunedContext):
+        seen.append(ctx)
+
+    body = {
+        **base_mandate(status="active", version=4), "type": "strategy_tuned", "strategy_id": "strat_1",
+        "changes": {"pace": "careful", "explore": 0.3},
+        "strategy": {"strategy_id": "strat_1", "goal": "Reach 100", "pace": "careful", "explore": 0.3}, "version": 4,
+    }
+    await agent.dispatch(Event(type="strategy_tuned", body=body))
+    assert len(seen) == 1
+    ctx = seen[0]
+    assert (ctx.mandate_id, ctx.strategy_id, ctx.version) == ("mandate-1", "strat_1", 4)
+    assert ctx.changes == {"pace": "careful", "explore": 0.3}
+    assert ctx.strategy["goal"] == "Reach 100"
+
+    # no handler: a quiet no-op
+    await make_agent().dispatch(Event(type="strategy_tuned", body=body))
+
+
+def test_tune_strategy_patches_snake_case_keys_with_the_version():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, json.loads(request.content), request.headers["api-key"]))
+        return json_response(200, {"id": "mandate-1", "version": 5})
+
+    client = make_sync_client(handler)
+    assert client.tune_strategy("k", "mandate-1", goal_kind="growth", pace="careful", explore=0.3, version=4)["version"] == 5
+    client.tune_strategy("k", "mandate-1", pace="aggressive", version=5)
+    assert seen[0] == ("PATCH", "/api/v1/mandates/mandate-1", {"version": 4, "strategy": {"explore": 0.3, "goal_kind": "growth", "pace": "careful"}}, "k")
+    assert seen[1][2] == {"version": 5, "strategy": {"pace": "aggressive"}}
+
+
+@pytest.mark.asyncio
+async def test_async_tune_strategy_patches_the_same_body():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(json.loads(request.content))
+        return json_response(200, {"id": "mandate-1", "version": 5})
+
+    client = make_async_client(handler)
+    await client.tune_strategy("k", "mandate-1", explore=0.1, version=4)
+    assert seen == [{"version": 4, "strategy": {"explore": 0.1}}]

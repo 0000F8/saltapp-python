@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.15.0 — 2026-10-19
+
+- **Tune a running plan.** The person (the plan's grantor) can change pace, exploring and the kind of goal on a plan that is already running, with no new approval (Salt 0.235.0, DYNAMIC_ADVANTAGE ADVANTAGE_P2_TUNE_CONTRACT). `client.tune_strategy(api_key, mandate_id, *, explore=None, goal_kind=None, pace=None, version)` (sync and async) sends `PATCH /api/v1/mandates/:id`; any other strategy key is refused by the API, 422 `strategy_not_editable`. The agent that runs the plan hears `strategy_tuned`: new `@agent.on_strategy_tuned` with `StrategyTunedContext` (`.mandate_id`, `.strategy_id`, `.changes`, `.strategy`, `.version`), classified as `strategy_tuned`. Same shape as salt-agent-sdk 0.28.0.
+
 ## 0.14.0 — 2026-10-19
 
 - **Phase 2 of the `advantage:` line, and the owner's taps.** `saltapp.work` writes and reads `open`, `settled`, `testing`, `kept` and `dropped` rows and an edge's `arm_key` (bad rows dropped; over 4000 characters the lowest-n edges go first, then the oldest rows), and `format_advantage_tap` / `parse_advantage_tap` write and detect `[[SALT-ADV-NEVER kind=arm key=…]]`, `[[SALT-ADV-NEVER kind=lens id=…]]` and `[[SALT-ADV-KEEP kind=lens id=…]]`. Same shapes as salt-agent-sdk 0.27.0 and salt-fe 0.233.0.
