@@ -645,7 +645,11 @@ on purpose:
   `advantage:` line of a report you build yourself, `advantage: {"edges":
   [{"label","edge","n"}],"open":[],"settled":[],"testing":[],"kept":[],
   "dropped":[],"explore":0.2}`, at most 8 edges, 4000 characters, the same
-  shape as salt-agent-sdk's `formatAdvantage`.) `on_handoff_confirmed`/`on_handoff_received` fire with the
+  shape as salt-agent-sdk's `formatAdvantage`, plus the phase 2 lists `open`,
+  `settled`, `testing`, `kept`, `dropped` and the owner's tap markers
+  `[[SALT-ADV-NEVER kind=arm key=…]]`, `[[SALT-ADV-NEVER kind=lens id=…]]`,
+  `[[SALT-ADV-KEEP kind=lens id=…]]` via `parse_advantage_tap`: act on one only
+  when its sender is the owner or the person the plan serves, and never show it.) `on_handoff_confirmed`/`on_handoff_received` fire with the
   raw event body; there's no `[[SALT-SESSION-NOTE]]` parsing, no
   `report_progress`/`[[SALT-WORK ...]]` wire format, no `delegate_to_agent`
   depth tracking. A caller who needs these can read `saltapp.webhook.Event.body`

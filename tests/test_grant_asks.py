@@ -51,7 +51,7 @@ def test_every_request_carries_x_salt_client():
 
     sync_client(handler).list_mandates("k")
     assert seen[0]["x-salt-client"] == f"saltapp-python/{saltapp.__version__}"
-    assert saltapp.__version__ == "0.13.0"
+    assert saltapp.__version__ == "0.14.0"
 
 
 def test_refusal_envelope_is_typed_and_absent_when_not_sent():

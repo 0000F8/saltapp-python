@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.0 — 2026-10-19
+
+- **Phase 2 of the `advantage:` line, and the owner's taps.** `saltapp.work` writes and reads `open`, `settled`, `testing`, `kept` and `dropped` rows and an edge's `arm_key` (bad rows dropped; over 4000 characters the lowest-n edges go first, then the oldest rows), and `format_advantage_tap` / `parse_advantage_tap` write and detect `[[SALT-ADV-NEVER kind=arm key=…]]`, `[[SALT-ADV-NEVER kind=lens id=…]]` and `[[SALT-ADV-KEEP kind=lens id=…]]`. Same shapes as salt-agent-sdk 0.27.0 and salt-fe 0.233.0.
+
 ## 0.13.0 — 2026-10-19
 
 - **The `advantage:` line of a work report.** DYNAMIC_ADVANTAGE phase 1. `saltapp.work` has `format_advantage` (edges sorted by edge, at most 8, the lowest-n dropped until 4000 characters, phase 2 keys present and empty), `parse_advantage`, `add_advantage_line` and `read_advantage_line`, the same shape salt-agent-sdk 0.26.0 and salt-fe read. This SDK still has no work reporter; the helpers work on a report's plaintext.
