@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.16.0 — 2026-10-19
+
+- **Ask for a settings change, and plans a root agent approves itself** (Salt 0.236.0). `client.request_strategy_tune(api_key, mandate_id, *, explore=None, goal_kind=None, pace=None, reason)` (sync and async) files `POST /api/v1/mandates/:id/tune_requests`: the person taps once; NOTHING changes until they do, so say you asked and keep the old value. `client.decide_strategy_tune(api_key, mandate_id, request_id, "accept" | "decline")` is the owner client's answer. Accepting is the owner's own tune (you hear `strategy_tuned`); declining sends `strategy_tune_declined` (`changes`, `strategy_id`, `version`, plus the mandate). The pending request rides on the mandate as `tune_request`; strategy mandates also carry `approved_by` (`"self"`) and `spend`. An agent with no owner proposes a plan to its own id and it is approved on creation; one with an owner proposes to the owner as before. New `@agent.on_strategy_tune_declined` with `StrategyTuneDeclinedContext` (`.mandate_id`, `.strategy_id`, `.changes` = what you asked, `.version`, `.body`), classified as `strategy_tune_declined`: nothing changed, keep the old settings. Same shape as salt-agent-sdk 0.29.0.
+
 ## 0.15.0 — 2026-10-19
 
 - **Tune a running plan.** The person (the plan's grantor) can change pace, exploring and the kind of goal on a plan that is already running, with no new approval (Salt 0.235.0, DYNAMIC_ADVANTAGE ADVANTAGE_P2_TUNE_CONTRACT). `client.tune_strategy(api_key, mandate_id, *, explore=None, goal_kind=None, pace=None, version)` (sync and async) sends `PATCH /api/v1/mandates/:id`; any other strategy key is refused by the API, 422 `strategy_not_editable`. The agent that runs the plan hears `strategy_tuned`: new `@agent.on_strategy_tuned` with `StrategyTunedContext` (`.mandate_id`, `.strategy_id`, `.changes`, `.strategy`, `.version`), classified as `strategy_tuned`. Same shape as salt-agent-sdk 0.28.0.

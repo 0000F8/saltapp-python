@@ -582,6 +582,22 @@ class MandateLifecycleContext:
         self.mandate = mandate
 
 
+class StrategyTuneDeclinedContext:
+    """The person (the plan's grantor) said "Not now" to a settings change you asked for with
+    `request_strategy_tune` (`on_strategy_tune_declined`). Nothing changed: keep the plan's current settings.
+    `changes` is what you asked for (`explore`, `goal_kind`, `pace`); `body` is the event verbatim."""
+
+    def __init__(self, agent: "Agent", body: dict[str, Any]) -> None:
+        self.agent = agent
+        self.body = body
+        self.mandate_id = body.get("id") if body.get("id") is not None else body.get("mandate_id")
+        strategy = body.get("strategy") if isinstance(body.get("strategy"), dict) else {}
+        self.strategy_id: str = str(body.get("strategy_id") or strategy.get("strategy_id") or "")
+        changes = body.get("changes") if isinstance(body.get("changes"), dict) else {}
+        self.changes: dict[str, Any] = changes
+        self.version = int(body.get("version") or 0)
+
+
 class StrategyTunedContext:
     """The person (the plan's grantor) changed the pace, exploring or kind of goal of a plan you run
     (`on_strategy_tuned`). Delivered to you only. These settings only tune effort: copy `changes` into your own
@@ -826,6 +842,12 @@ class Agent:
         self._handlers["strategy_tuned"] = fn
         return fn
 
+    def on_strategy_tune_declined(self, fn: Handler) -> Handler:
+        """The person declined a settings change this agent asked for (`request_strategy_tune`); nothing changed.
+        `ctx`: `StrategyTuneDeclinedContext` (`.mandate_id`, `.strategy_id`, `.changes`, `.version`)."""
+        self._handlers["strategy_tune_declined"] = fn
+        return fn
+
     def on_approval_requested(self, fn: Handler) -> Handler:
         """This agent is the PRINCIPAL of an ask-mode call and is waiting
         on a decision. `ctx`: `ApprovalRequestedContext` (`.exercise`,
@@ -925,6 +947,10 @@ class Agent:
                 handler = self._handlers.get("strategy_tuned")
                 if handler is not None and (event.body.get("id") or event.body.get("mandate_id")) is not None:
                     await handler(StrategyTunedContext(self, event.body))
+            elif event.type == "strategy_tune_declined":
+                handler = self._handlers.get("strategy_tune_declined")
+                if handler is not None and (event.body.get("id") or event.body.get("mandate_id")) is not None:
+                    await handler(StrategyTuneDeclinedContext(self, event.body))
             elif event.type == "approval_requested":
                 await self._handle_approval_requested(event.body)
             elif event.type == "approval_decided":

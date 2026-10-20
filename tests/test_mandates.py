@@ -15,6 +15,7 @@ from saltapp.agent import (
     ApprovalRequestedContext,
     MandateLifecycleContext,
     MandateOfferedContext,
+    StrategyTuneDeclinedContext,
     StrategyTunedContext,
     Agent,
 )
@@ -446,3 +447,61 @@ async def test_async_tune_strategy_patches_the_same_body():
     client = make_async_client(handler)
     await client.tune_strategy("k", "mandate-1", explore=0.1, version=4)
     assert seen == [{"version": 4, "strategy": {"explore": 0.1}}]
+
+
+def test_request_and_decide_strategy_tune_post_the_expected_bodies():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, json.loads(request.content), request.headers["api-key"]))
+        return json_response(200, {"id": "mandate-1", "tune_request": None})
+
+    client = make_sync_client(handler)
+    client.request_strategy_tune("k", "mandate-1", pace="careful", goal_kind="growth", explore=0.3, reason="Fewer unsubscribes")
+    client.decide_strategy_tune("o", "mandate-1", "req-1", "decline")
+    assert seen[0] == ("POST", "/api/v1/mandates/mandate-1/tune_requests", {"strategy": {"explore": 0.3, "goal_kind": "growth", "pace": "careful"}, "reason": "Fewer unsubscribes"}, "k")
+    assert seen[1] == ("POST", "/api/v1/mandates/mandate-1/tune_requests/req-1/decide", {"decision": "decline"}, "o")
+
+
+@pytest.mark.asyncio
+async def test_async_request_and_decide_strategy_tune_post_the_same_bodies():
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.url.path, json.loads(request.content)))
+        return json_response(200, {"id": "mandate-1"})
+
+    client = make_async_client(handler)
+    await client.request_strategy_tune("k", "mandate-1", pace="aggressive", reason="Go faster")
+    await client.decide_strategy_tune("o", "mandate-1", "req-1", "accept")
+    assert seen == [("/api/v1/mandates/mandate-1/tune_requests", {"strategy": {"pace": "aggressive"}, "reason": "Go faster"}),
+                    ("/api/v1/mandates/mandate-1/tune_requests/req-1/decide", {"decision": "accept"})]
+
+
+def test_classify_strategy_tune_declined():
+    assert classify({"type": "strategy_tune_declined", "mandate_id": "mandate-1"}) == "strategy_tune_declined"
+
+
+@pytest.mark.asyncio
+async def test_strategy_tune_declined_reaches_its_handler_and_is_not_a_tune():
+    agent = make_agent()
+    declined, tuned = [], []
+
+    @agent.on_strategy_tune_declined
+    async def on_declined(ctx: StrategyTuneDeclinedContext):
+        declined.append(ctx)
+
+    @agent.on_strategy_tuned
+    async def on_tuned(ctx: StrategyTunedContext):
+        tuned.append(ctx)
+
+    body = {**base_mandate(status="active", version=4), "type": "strategy_tune_declined", "strategy_id": "strat_1",
+            "changes": {"pace": "careful"}, "version": 4}
+    await agent.dispatch(Event(type="strategy_tune_declined", body=body))
+    assert len(declined) == 1 and tuned == []
+    ctx = declined[0]
+    assert (ctx.mandate_id, ctx.strategy_id, ctx.version) == ("mandate-1", "strat_1", 4)
+    assert ctx.changes == {"pace": "careful"}
+
+    # no handler: a quiet no-op
+    await make_agent().dispatch(Event(type="strategy_tune_declined", body=body))

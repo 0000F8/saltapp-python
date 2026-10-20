@@ -63,6 +63,10 @@ def _tune_body(explore: float | None, goal_kind: str | None, pace: str | None, v
     return {"version": version, "strategy": strategy}
 
 
+def _tune_request_body(explore: float | None, goal_kind: str | None, pace: str | None, reason: str) -> dict[str, Any]:
+    return {"strategy": _tune_body(explore, goal_kind, pace, 0)["strategy"], "reason": reason}
+
+
 def _grant_body(
     grantor_id: str,
     capabilities: list[dict[str, Any]],
@@ -887,6 +891,30 @@ class SaltClient:
         `strategy_tuned` (`on_strategy_tuned`)."""
         return self._request("PATCH", f"/api/v1/mandates/{mandate_id}", api_key, _tune_body(explore, goal_kind, pace, version))
 
+    def request_strategy_tune(
+        self,
+        api_key: str,
+        mandate_id: str,
+        *,
+        explore: float | None = None,
+        goal_kind: str | None = None,
+        pace: str | None = None,
+        reason: str,
+    ) -> dict[str, Any]:
+        """Ask the person (the plan's grantor) to change the pace, exploring or kind of goal of a RUNNING plan you
+        run. NOTHING changes until they accept: tell them you asked ("I've asked you to confirm") and keep the old
+        settings. `reason` is at most 300 characters. One pending request per plan; a newer one replaces it. 422
+        codes: `strategy_not_editable`, `invalid_strategy`, `no_change`, `invalid_reason`, `self_approved` (a plan you
+        approved yourself has nobody to ask: use `tune_strategy`). The request rides on the mandate as
+        `tune_request`. Accepted: you hear `strategy_tuned`; declined: `strategy_tune_declined`."""
+        return self._request("POST", f"/api/v1/mandates/{mandate_id}/tune_requests", api_key, _tune_request_body(explore, goal_kind, pace, reason))
+
+    def decide_strategy_tune(self, api_key: str, mandate_id: str, request_id: str, decision: str) -> dict[str, Any]:
+        """For the owner's client: answer a pending `tune_request` on a plan you granted. `decision` is "accept"
+        (applied exactly like `tune_strategy`; the agent hears `strategy_tuned`) or "decline" (nothing changes; the
+        agent hears `strategy_tune_declined`). 404 `request_not_open` when it was replaced or already answered."""
+        return self._request("POST", f"/api/v1/mandates/{mandate_id}/tune_requests/{request_id}/decide", api_key, {"decision": decision})
+
     def accept_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
         """Grantee accepts an offered mandate (binds its current key
         fingerprint), or the grantor activates one still `proposed` by the
@@ -1552,6 +1580,23 @@ class AsyncSaltClient:
     ) -> dict[str, Any]:
         """See SaltClient.tune_strategy."""
         return await self._request("PATCH", f"/api/v1/mandates/{mandate_id}", api_key, _tune_body(explore, goal_kind, pace, version))
+
+    async def request_strategy_tune(
+        self,
+        api_key: str,
+        mandate_id: str,
+        *,
+        explore: float | None = None,
+        goal_kind: str | None = None,
+        pace: str | None = None,
+        reason: str,
+    ) -> dict[str, Any]:
+        """See SaltClient.request_strategy_tune."""
+        return await self._request("POST", f"/api/v1/mandates/{mandate_id}/tune_requests", api_key, _tune_request_body(explore, goal_kind, pace, reason))
+
+    async def decide_strategy_tune(self, api_key: str, mandate_id: str, request_id: str, decision: str) -> dict[str, Any]:
+        """See SaltClient.decide_strategy_tune."""
+        return await self._request("POST", f"/api/v1/mandates/{mandate_id}/tune_requests/{request_id}/decide", api_key, {"decision": decision})
 
     async def accept_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
         """See SaltClient.accept_mandate."""

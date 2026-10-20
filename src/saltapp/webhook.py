@@ -34,7 +34,7 @@ DELIVERY_ID_HEADER = "X-Salt-Delivery-Id"
 
 DEFAULT_TOLERANCE_SECONDS = 300
 
-EventType = str  # "message" | "card_interaction" | "invoice_paid" | "chat_opened" | "member_key_changed" | "handoff_confirmed" | "handoff_received" | "mandate_offered" | "mandate_activated" | "mandate_paused" | "mandate_revoked" | "strategy_tuned" | "approval_requested" | "approval_decided" | "device_session_ended" | "device_back" | "unknown"
+EventType = str  # "message" | "card_interaction" | "invoice_paid" | "chat_opened" | "member_key_changed" | "handoff_confirmed" | "handoff_received" | "mandate_offered" | "mandate_activated" | "mandate_paused" | "mandate_revoked" | "strategy_tuned" | "strategy_tune_declined" | "approval_requested" | "approval_decided" | "device_session_ended" | "device_back" | "unknown"
 
 # Mandates R2 (salt-api's MandateEventJob): same rail as card_interaction/
 # invoice_paid -- a per-recipient plaintext delivery, always carrying an
@@ -47,6 +47,7 @@ _MANDATE_EVENT_TYPES = (
     "mandate_paused",
     "mandate_revoked",
     "strategy_tuned",
+    "strategy_tune_declined",
     "approval_requested",
     "approval_decided",
 )
