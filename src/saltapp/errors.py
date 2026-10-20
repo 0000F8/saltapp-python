@@ -66,6 +66,38 @@ class RecipientContactsOnlyError(SaltApiError):
         self.sentence: str = err if isinstance(err, str) else "This person only takes messages from their contacts."
 
 
+APPROVE_FIRST = "approve_first"
+PLAN_REQUIRED = "plan_required"
+
+
+class ApproveFirstError(SaltApiError):
+    """403 `approve_first` (an act with no approved, unused ask) or 422 `approve_first` (a first proposal for a public
+    post, public room or first message to someone new in a mode other than `ask`). `.sentence` is the server's own words:
+    show it, do not retry the act. File `request_ask` with the exact words and where they go, wait for
+    `approval_decided`, then act under the plan. `.capability`, `.approved` and `.needed` are set when the body carries them."""
+
+    def __init__(self, method: str, url: str, status: int, body: Any, retry_after: int | None = None) -> None:
+        super().__init__(method, url, status, body, retry_after)
+        self.code = APPROVE_FIRST
+        b = body if isinstance(body, dict) else {}
+        err = b.get("error")
+        self.sentence: str = err if isinstance(err, str) else "This waits for the person's OK first."
+        self.capability: str | None = b.get("capability") if isinstance(b.get("capability"), str) else None
+        self.approved: int | None = b.get("approved") if isinstance(b.get("approved"), int) else None
+        self.needed: int | None = b.get("needed") if isinstance(b.get("needed"), int) else None
+
+
+class PlanRequiredError(SaltApiError):
+    """403 `plan_required`: a post, room or first message must name the plan it belongs to. Pass `plan=<plan mandate id>`
+    (sent as `X-Salt-Plan`) once the person has approved the plan. `.sentence` is the server's own words."""
+
+    def __init__(self, method: str, url: str, status: int, body: Any, retry_after: int | None = None) -> None:
+        super().__init__(method, url, status, body, retry_after)
+        self.code = PLAN_REQUIRED
+        err = body.get("error") if isinstance(body, dict) else None
+        self.sentence: str = err if isinstance(err, str) else "Name the plan this belongs to."
+
+
 # `SaltApiError.code` values on a refused rule write or rule card. Read the code, not the sentence.
 RULES_CAP = "rules_cap"
 RULE_NEEDS_SERVICE = "rule_needs_service"
@@ -96,6 +128,10 @@ def api_error(method: str, url: str, status: int, body: Any, retry_after: int | 
     """The exception for a non-2xx response: a typed subclass for the refusals a caller branches on."""
     if status == 403 and isinstance(body, dict) and body.get("code") == RECIPIENT_CONTACTS_ONLY:
         return RecipientContactsOnlyError(method, url, status, body, retry_after)
+    if isinstance(body, dict) and body.get("code") == APPROVE_FIRST:
+        return ApproveFirstError(method, url, status, body, retry_after)
+    if isinstance(body, dict) and body.get("code") == PLAN_REQUIRED:
+        return PlanRequiredError(method, url, status, body, retry_after)
     if status == 409 and isinstance(body, dict) and body.get("code") == STALE_RULES:
         return StaleRulesError(method, url, status, body, retry_after)
     return SaltApiError(method, url, status, body, retry_after)

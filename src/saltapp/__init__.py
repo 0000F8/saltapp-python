@@ -18,7 +18,7 @@ from saltapp._version import __version__
 
 from saltapp.agent import Agent, AskResult, AskTimeout
 from saltapp.chat_privacy import is_private_chat
-from saltapp.errors import RecipientContactsOnlyError, SaltApiError, SaltAppError, StaleRulesError, RULE_ERROR_CODES
+from saltapp.errors import ApproveFirstError, PlanRequiredError, RecipientContactsOnlyError, SaltApiError, SaltAppError, StaleRulesError, RULE_ERROR_CODES
 from saltapp.identity import Identity
 from saltapp.register import RegisteredAgent, register_agent, register_agent_async
 from saltapp.script_job import FileSeenStore, MemorySeenStore, ScriptJobResult, SeenStore, run_script_job
@@ -27,10 +27,12 @@ __all__ = [
     "__version__",
     "Agent",
     "AskResult",
+    "ApproveFirstError",
     "AskTimeout",
     "FileSeenStore",
     "Identity",
     "MemorySeenStore",
+    "PlanRequiredError",
     "RecipientContactsOnlyError",
     "RegisteredAgent",
     "register_agent",

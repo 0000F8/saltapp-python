@@ -640,11 +640,47 @@ class ApprovalDecidedContext:
     """This agent made the original ask-mode call and its exercise was
     just decided -- informational, so it can resume (or give up on)
     whatever it was doing. `exercise.decision` is `"approved"` or
-    `"denied"`."""
+    `"denied"`; `.approved` is the same as a bool. `.ask` (an `ApprovalAsk`)
+    is set when it was an approve-first ask from `client.request_ask`."""
 
     def __init__(self, agent: "Agent", exercise: dict[str, Any]) -> None:
         self.agent = agent
         self.exercise = exercise
+        self.approved: bool = exercise.get("decision") == "approved"
+        # Approve-first (`client.request_ask`): set only when this decision is about one of those asks.
+        self.ask: ApprovalAsk | None = ApprovalAsk(exercise, agent.identity) if exercise.get("action") == "mandates#ask" else None
+
+
+class ApprovalAsk:
+    """The decision on an approve-first ask (`client.request_ask`), read from the exercise's `summary`.
+    `exercise_id` is the id `request_ask` returned. `words` is the FINAL text to send, exactly: Salt writes the person's
+    edit into `summary.words` and keeps your original as `asked_words` (`asked_words_armored` for outreach), so `edited`
+    says whether they changed it. For outreach the final text arrives armored (`words_armored`, sealed to the person and
+    to you) and `words` is that decrypted with your own key (None if that failed). Denied: drop the act.
+    `target_label` is Salt's plain label for who or what the act goes to."""
+
+    def __init__(self, exercise: dict[str, Any], identity: Identity | None = None) -> None:
+        summary = exercise.get("summary") if isinstance(exercise.get("summary"), dict) else {}
+
+        def text(key: str) -> str | None:
+            value = summary.get(key)
+            return value if isinstance(value, str) else None
+
+        self.exercise_id = exercise.get("id")
+        self.capability: str = str(exercise.get("capability") or "")
+        self.where = text("where")
+        self.words_armored = text("words_armored")
+        self.words = text("words")
+        if self.words is None and self.words_armored and identity is not None and exercise.get("decision") == "approved":
+            try:
+                self.words = crypto.decrypt(self.words_armored, identity.private_key, identity.passphrase)
+            except Exception:  # noqa: BLE001
+                self.words = None
+        self.asked_words = text("asked_words")
+        self.asked_words_armored = text("asked_words_armored")
+        self.edited: bool = self.asked_words is not None or self.asked_words_armored is not None
+        target_label = exercise.get("target_label")
+        self.target_label: str | None = target_label if isinstance(target_label, str) else None
 
 
 class GrantDecidedContext:
@@ -838,7 +874,8 @@ class Agent:
 
     def on_strategy_tuned(self, fn: Handler) -> Handler:
         """The person changed pace, exploring or the kind of goal on a plan this agent runs. `ctx`:
-        `StrategyTunedContext` (`.mandate_id`, `.strategy_id`, `.changes`, `.strategy`, `.version`)."""
+        `StrategyTunedContext` (`.mandate_id`, `.strategy_id`, `.changes`, `.strategy`, `.version`).
+        `changes["mode_change"]` = `{"capability", "mode"}` when it answers `request_mode_change`."""
         self._handlers["strategy_tuned"] = fn
         return fn
 
@@ -857,7 +894,7 @@ class Agent:
 
     def on_approval_decided(self, fn: Handler) -> Handler:
         """This agent made the original ask-mode call and it was just
-        decided. `ctx`: `ApprovalDecidedContext` (`.exercise`)."""
+        decided. `ctx`: `ApprovalDecidedContext` (`.exercise`, `.approved`, `.ask` for an approve-first ask)."""
         self._handlers["approval_decided"] = fn
         return fn
 
