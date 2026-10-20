@@ -130,3 +130,32 @@ def test_async_calls_match():
         ("POST", "/api/v1/mandates/m1/working/decide"),
     ]
     assert calls[0].headers["Idempotency-Key"] == "i"
+
+
+def test_drop_plan_steps_patches_strategy_drop_steps_with_the_version():
+    calls, handler = recorder(httpx.Response(200, json={"id": "m1", "version": 5}))
+    sync_client(handler).drop_plan_steps("k", "m1", version=4, steps=[1, 3])
+    assert calls[0].method == "PATCH" and calls[0].url.path == "/api/v1/mandates/m1"
+    assert json.loads(calls[0].content) == {"version": 4, "strategy": {"drop_steps": [1, 3]}}
+
+
+@pytest.mark.parametrize("code", ["plan_locked", "invalid_strategy", "strategy_not_editable"])
+def test_drop_plan_steps_refusals_keep_their_code(code):
+    _, handler = recorder(httpx.Response(422, json={"error": "No.", "code": code}))
+    with pytest.raises(SaltApiError) as exc:
+        sync_client(handler).drop_plan_steps("k", "m1", version=1, steps=[0])
+    assert exc.value.code == code
+
+
+def test_get_strategy_limits_reads_the_public_limits_without_a_key_and_async_matches():
+    calls, handler = recorder(httpx.Response(200, json={"live_tunable": ["pace"], "live_narrowable": ["drop_steps"], "lock_values": ["all"]}))
+    assert sync_client(handler).get_strategy_limits()["live_narrowable"] == ["drop_steps"]
+    assert calls[0].url.path == "/api/v1/strategies/limits" and "api-key" not in calls[0].headers
+
+    async def run():
+        c = async_client(handler)
+        await c.get_strategy_limits()
+        await c.drop_plan_steps("k", "m1", version=2, steps=[0])
+
+    asyncio.run(run())
+    assert json.loads(calls[2].content) == {"version": 2, "strategy": {"drop_steps": [0]}}

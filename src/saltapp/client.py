@@ -1294,6 +1294,19 @@ class SaltClient:
         a grantee gets 403 with `code == "resume_grantor_only"` ("Tap Resume on the plan to start it again."); tell the person."""
         return self._request("POST", "/api/v1/mandates/resume_all", api_key, _goal_body(goal_id))
 
+    def drop_plan_steps(self, api_key: str, mandate_id: str, *, version: int, steps: list[int]) -> dict[str, Any]:
+        """Take steps out of a RUNNING plan (`PATCH /api/v1/mandates/:id` `{"version", "strategy": {"drop_steps": [...]}}`, Salt 0.245.0):
+        `steps` are 0-based positions in the plan, each once. The plan only narrows: it keeps at least one step (422 `invalid_strategy`),
+        and adding steps is 422 `strategy_not_editable`. Allowed to the plan's agent, the person, and an account on its own plan. A locked
+        `drop_steps` is 422 `plan_locked`. Salt writes the "dropped a step" line and the person can Undo it (`undo_tuning`); you hear
+        `strategy_tuned` with `changes["drop_steps"]` = `[{"index", "text"}]`. Tell the person in one line which step and why."""
+        return self._request("PATCH", f"/api/v1/mandates/{mandate_id}", api_key, {"version": version, "strategy": {"drop_steps": steps}})
+
+    def get_strategy_limits(self) -> dict[str, Any]:
+        """The closed lists and ranges the API accepts for plans (`GET /api/v1/strategies/limits`, public): `live_tunable`,
+        `live_narrowable` (`["drop_steps"]`: keys a running plan can only narrow), `lock_values`, and more."""
+        return self._request("GET", "/api/v1/strategies/limits", "")
+
     def give_goal(
         self, api_key: str, goal: str, *, deadline: str | None = None, chat_id: str | None = None, idempotency_key: str | None = None
     ) -> dict[str, Any]:
@@ -2140,6 +2153,14 @@ class AsyncSaltClient:
     async def resume_all(self, api_key: str, *, goal_id: str | None = None) -> dict[str, Any]:
         """See SaltClient.resume_all."""
         return await self._request("POST", "/api/v1/mandates/resume_all", api_key, _goal_body(goal_id))
+
+    async def drop_plan_steps(self, api_key: str, mandate_id: str, *, version: int, steps: list[int]) -> dict[str, Any]:
+        """See SaltClient.drop_plan_steps."""
+        return await self._request("PATCH", f"/api/v1/mandates/{mandate_id}", api_key, {"version": version, "strategy": {"drop_steps": steps}})
+
+    async def get_strategy_limits(self) -> dict[str, Any]:
+        """See SaltClient.get_strategy_limits."""
+        return await self._request("GET", "/api/v1/strategies/limits", "")
 
     async def give_goal(
         self, api_key: str, goal: str, *, deadline: str | None = None, chat_id: str | None = None, idempotency_key: str | None = None
