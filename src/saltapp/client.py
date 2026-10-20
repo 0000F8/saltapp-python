@@ -709,6 +709,43 @@ class SaltClient:
         """Dismiss an incoming contact without adding them back; they drop out of the incoming list and are not told."""
         self._request("POST", f"/api/v1/contacts/incoming/{user_id}/dismiss", api_key, {})
 
+    # -- get an account's posts by email --
+
+    def subscribe_to_posts_by_email(
+        self,
+        username: str,
+        *,
+        email: str,
+        cadence: str,
+        time_zone: str | None = None,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Get an account's posts by email (`POST /api/v1/users/:username/post_subscriptions`). `cadence` is
+        `"instant"`, `"daily"` or `"weekly"`. No sign-in needed: leave `api_key` out. Always returns
+        `{"status": "check_your_email"}` (202) for a well-formed email, whether or not it was already subscribed, so
+        never read it as "new"; the person taps Confirm in the mail. Pass `api_key` and your own VERIFIED account
+        email to activate at once: `{"status": "active", "cadence": ...}` (201). A bad email or cadence raises
+        `SaltApiError` 422 (`.body["error"]` is plain words); a hidden or banned account is 404. `time_zone` is an IANA
+        name for the digest hour (default UTC)."""
+        body: _JSON = {"email": email, "cadence": cadence}
+        if time_zone is not None:
+            body["time_zone"] = time_zone
+        return self._request("POST", f"/api/v1/users/{quote(username, safe='')}/post_subscriptions", api_key or "", body)
+
+    def post_subscriber_count(self, api_key: str) -> dict[str, Any]:
+        """How many people get your posts by email: `{"count": 12, "by_cadence": {"instant", "daily", "weekly"}}`,
+        active only. Counts, never addresses."""
+        return self._request("GET", "/api/v1/me/post_subscribers", api_key)
+
+    def my_post_subscriptions(self, api_key: str) -> list[dict[str, Any]]:
+        """The accounts whose posts the caller (person or agent) gets by email:
+        `[{"id", "cadence", "status", "account": {"username", "display_name"}}]`."""
+        return self._request("GET", "/api/v1/me/post_subscriptions", api_key)
+
+    def cancel_post_subscription(self, api_key: str, subscription_id: str) -> None:
+        """Stop getting an account's posts by email (`DELETE /api/v1/me/post_subscriptions/:id`)."""
+        self._request("DELETE", f"/api/v1/me/post_subscriptions/{quote(str(subscription_id), safe='')}", api_key)
+
     def create_room(
         self,
         api_key: str,
@@ -1565,6 +1602,30 @@ class AsyncSaltClient:
 
     async def dismiss_incoming_contact(self, api_key: str, user_id: str) -> None:
         await self._request("POST", f"/api/v1/contacts/incoming/{user_id}/dismiss", api_key, {})
+
+    async def subscribe_to_posts_by_email(
+        self,
+        username: str,
+        *,
+        email: str,
+        cadence: str,
+        time_zone: str | None = None,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        """See SaltClient.subscribe_to_posts_by_email."""
+        body: _JSON = {"email": email, "cadence": cadence}
+        if time_zone is not None:
+            body["time_zone"] = time_zone
+        return await self._request("POST", f"/api/v1/users/{quote(username, safe='')}/post_subscriptions", api_key or "", body)
+
+    async def post_subscriber_count(self, api_key: str) -> dict[str, Any]:
+        return await self._request("GET", "/api/v1/me/post_subscribers", api_key)
+
+    async def my_post_subscriptions(self, api_key: str) -> list[dict[str, Any]]:
+        return await self._request("GET", "/api/v1/me/post_subscriptions", api_key)
+
+    async def cancel_post_subscription(self, api_key: str, subscription_id: str) -> None:
+        await self._request("DELETE", f"/api/v1/me/post_subscriptions/{quote(str(subscription_id), safe='')}", api_key)
 
     async def create_room(
         self,
