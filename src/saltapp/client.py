@@ -185,6 +185,19 @@ def _goal_body(goal_id: str | None) -> dict[str, Any] | None:
     return {"goal_id": goal_id} if goal_id is not None else None
 
 
+def _goal_request_body(goal: str, deadline: str | None, chat_id: str | None) -> dict[str, Any]:
+    body: dict[str, Any] = {"goal": goal}
+    if deadline is not None:
+        body["deadline"] = deadline
+    if chat_id is not None:
+        body["chat_id"] = chat_id
+    return body
+
+
+def _working_body(testing: list[dict[str, Any]] | None, kept: list[dict[str, Any]] | None, dropped: list[dict[str, Any]] | None) -> dict[str, Any]:
+    return {"testing": testing or [], "kept": kept or [], "dropped": dropped or []}
+
+
 def _tune_body(explore: float | None, goal_kind: str | None, pace: str | None, version: int) -> dict[str, Any]:
     strategy: dict[str, Any] = {}
     if explore is not None:
@@ -1281,6 +1294,32 @@ class SaltClient:
         a grantee gets 403 with `code == "resume_grantor_only"` ("Tap Resume on the plan to start it again."); tell the person."""
         return self._request("POST", "/api/v1/mandates/resume_all", api_key, _goal_body(goal_id))
 
+    def give_goal(
+        self, api_key: str, goal: str, *, deadline: str | None = None, chat_id: str | None = None, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
+        """Give Salt a goal when you have no runtime of your own (`POST /api/v1/goals`): the same as typing it to @salt. 201
+        `{"id", "status": "waiting", "next"}`. Salt's assistant files a plan to you (read `GET /api/v1/mandates?role=grantor&status=proposed`,
+        or watch `get_goal_request`), then Allow it with `accept_mandate`. `goal` is plain text, 1 to 2000 characters; `deadline` is
+        `YYYY-MM-DD`; `chat_id` is a chat you are in. 5 waiting and 20 a day (429 `too_many_waiting` / `goals_per_day`, `.retry_after`).
+        Pass `idempotency_key` and a retry files one request."""
+        return self._request("POST", "/api/v1/goals", api_key, _goal_request_body(goal, deadline, chat_id), idempotency_key=idempotency_key)
+
+    def get_goal_request(self, api_key: str, goal_request_id: str) -> dict[str, Any]:
+        """Where a goal you gave stands (`GET /api/v1/goals/:id`): `{"id", "status": "waiting" | "planned" | "declined" | "expired",
+        "goal", "deadline", "mandate_id", "created_at"}`. Only the person who gave it can read it (404 otherwise)."""
+        return self._request("GET", f"/api/v1/goals/{goal_request_id}", api_key)
+
+    def put_working(self, api_key: str, mandate_id: str, *, testing: list[dict[str, Any]] | None = None, kept: list[dict[str, Any]] | None = None, dropped: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """The agent running a plan publishes what it is testing, keeping and dropping (`PUT /api/v1/mandates/:id/working`); replaces the
+        lists, and an entry's `decision` stays when you publish again. Grantee only (403 `working_grantee_only`); at most 20 entries a list,
+        280 characters a text. Entries: testing `{id, text, since, trials, result?}`, kept `{id, text, kept_at, lift?}`, dropped `{id, text, why}`."""
+        return self._request("PUT", f"/api/v1/mandates/{mandate_id}/working", api_key, _working_body(testing, kept, dropped))
+
+    def decide_working(self, api_key: str, mandate_id: str, entry_id: str, decision: str) -> dict[str, Any]:
+        """The plan's person decides on one entry (`POST /api/v1/mandates/:id/working/decide`): `decision` is "keep" or "never". Grantor
+        only (403 `working_grantor_only`); 422 `entry_not_found`. The agent hears `plan.working_decided` `{mandate_id, id, decision}`."""
+        return self._request("POST", f"/api/v1/mandates/{mandate_id}/working/decide", api_key, {"id": entry_id, "decision": decision})
+
     def renew_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
         """Standing mandates only: +90 days from now."""
         return self._request("POST", f"/api/v1/mandates/{mandate_id}/renew", api_key)
@@ -2101,6 +2140,24 @@ class AsyncSaltClient:
     async def resume_all(self, api_key: str, *, goal_id: str | None = None) -> dict[str, Any]:
         """See SaltClient.resume_all."""
         return await self._request("POST", "/api/v1/mandates/resume_all", api_key, _goal_body(goal_id))
+
+    async def give_goal(
+        self, api_key: str, goal: str, *, deadline: str | None = None, chat_id: str | None = None, idempotency_key: str | None = None
+    ) -> dict[str, Any]:
+        """See SaltClient.give_goal."""
+        return await self._request("POST", "/api/v1/goals", api_key, _goal_request_body(goal, deadline, chat_id), idempotency_key=idempotency_key)
+
+    async def get_goal_request(self, api_key: str, goal_request_id: str) -> dict[str, Any]:
+        """See SaltClient.get_goal_request."""
+        return await self._request("GET", f"/api/v1/goals/{goal_request_id}", api_key)
+
+    async def put_working(self, api_key: str, mandate_id: str, *, testing: list[dict[str, Any]] | None = None, kept: list[dict[str, Any]] | None = None, dropped: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """See SaltClient.put_working."""
+        return await self._request("PUT", f"/api/v1/mandates/{mandate_id}/working", api_key, _working_body(testing, kept, dropped))
+
+    async def decide_working(self, api_key: str, mandate_id: str, entry_id: str, decision: str) -> dict[str, Any]:
+        """See SaltClient.decide_working."""
+        return await self._request("POST", f"/api/v1/mandates/{mandate_id}/working/decide", api_key, {"id": entry_id, "decision": decision})
 
     async def renew_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
         return await self._request("POST", f"/api/v1/mandates/{mandate_id}/renew", api_key)

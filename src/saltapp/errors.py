@@ -66,6 +66,27 @@ class RecipientContactsOnlyError(SaltApiError):
         self.sentence: str = err if isinstance(err, str) else "This person only takes messages from their contacts."
 
 
+NO_CAPABILITY = "no_capability"
+FIRST_POST_NEEDS_POST = "first_post_needs_post"
+SOURCE_UNAVAILABLE = "source_unavailable"
+GOAL_PLAN_ERROR_CODES = frozenset({NO_CAPABILITY, FIRST_POST_NEEDS_POST, SOURCE_UNAVAILABLE})
+
+
+class GoalPlanError(SaltApiError):
+    """422 `no_capability` (an ask on a plan you approved yourself holds no permissions), `first_post_needs_post` (a `first_post`
+    with no `profile.post` row) or `source_unavailable` (a money target for a person with no wallet). `.sentence` is the server's
+    own words and `.next` its next step when it gives one (e.g. "To have Salt run it, give Salt the goal: POST /api/v1/goals.").
+    Do not retry unchanged."""
+
+    def __init__(self, method: str, url: str, status: int, body: Any, retry_after: int | None = None) -> None:
+        super().__init__(method, url, status, body, retry_after)
+        b = body if isinstance(body, dict) else {}
+        err = b.get("error")
+        self.sentence: str = err if isinstance(err, str) else "Salt refused this plan call."
+        nxt = b.get("next")
+        self.next: str | None = nxt if isinstance(nxt, str) else None
+
+
 APPROVE_FIRST = "approve_first"
 PLAN_REQUIRED = "plan_required"
 
@@ -132,6 +153,8 @@ def api_error(method: str, url: str, status: int, body: Any, retry_after: int | 
         return ApproveFirstError(method, url, status, body, retry_after)
     if isinstance(body, dict) and body.get("code") == PLAN_REQUIRED:
         return PlanRequiredError(method, url, status, body, retry_after)
+    if isinstance(body, dict) and body.get("code") in GOAL_PLAN_ERROR_CODES:
+        return GoalPlanError(method, url, status, body, retry_after)
     if status == 409 and isinstance(body, dict) and body.get("code") == STALE_RULES:
         return StaleRulesError(method, url, status, body, retry_after)
     return SaltApiError(method, url, status, body, retry_after)
