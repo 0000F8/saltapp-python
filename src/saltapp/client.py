@@ -54,6 +54,9 @@ ACT_FOR_HEADER = "X-Salt-Act-For"
 MANDATE_HEADER = "X-Salt-Mandate"
 # Approve-first (Salt 0.240.0): the plan a post, room or first message belongs to.
 PLAN_HEADER = "X-Salt-Plan"
+# `event_type` of the plain-text lines Salt writes into a plan's chat (chat events, not webhook events). They are Salt's
+# own words: never claim posted/paused/stopped/tuned in your own, point to the line.
+PLAN_EVENT_TYPES = ("plan_filed", "plan_allowed", "plan_acted", "plan_paused", "plan_resumed", "plan_stopped", "plan_tuned")
 APPROVE_FIRST_CAPABILITIES = ("profile.post", "room.create", "outreach.request")
 
 
@@ -162,6 +165,24 @@ def _post_body(room_id: str, text: str | None, media: tuple[bytes, str] | None) 
 
 def _mode_change_body(capability: str, mode: str, reason: str) -> dict[str, Any]:
     return {"mode_change": {"capability": capability, "mode": mode}, "reason": reason}
+
+
+def _accept_body(version: int | None, first_post_words: str | None) -> dict[str, Any] | None:
+    body: dict[str, Any] = {}
+    if version is not None:
+        body["version"] = version
+    if first_post_words is not None:
+        body["first_post_words"] = first_post_words
+    return body or None
+
+
+def _readiness_path(person_id: str | None, plan_id: str | None) -> str:
+    params = {k: v for k, v in (("person_id", person_id), ("plan_id", plan_id)) if v is not None}
+    return "/api/v1/me/readiness" + (f"?{urlencode(params)}" if params else "")
+
+
+def _goal_body(goal_id: str | None) -> dict[str, Any] | None:
+    return {"goal_id": goal_id} if goal_id is not None else None
 
 
 def _tune_body(explore: float | None, goal_kind: str | None, pace: str | None, version: int) -> dict[str, Any]:
@@ -1225,12 +1246,40 @@ class SaltClient:
                     raise
         return latest_plan_report(self.get_chat_messages(identity.api_key, lane_id), identity, strategy_id)
 
-    def accept_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
+    def accept_mandate(self, api_key: str, mandate_id: str, *, version: int | None = None, first_post_words: str | None = None) -> dict[str, Any]:
         """Grantee accepts an offered mandate (binds its current key
         fingerprint), or the grantor activates one still `proposed` by the
         grantee. See `MandateOfferedContext.accept()` in `saltapp.agent`,
-        which calls this for an incoming `mandate_offered` event."""
-        return self._request("POST", f"/api/v1/mandates/{mandate_id}/accept", api_key)
+        which calls this for an incoming `mandate_offered` event.
+
+        For the person's Allow on a plan that carries `strategy["first_post"]`, pass `first_post_words` (the words as shown, or their
+        edit): it is required then (422 `words_required`; 422 `no_first_post` for a plan with none), and one call allows the plan and
+        posts as them once. The answer carries `first_post_result` (`exercise_id`, `message_id`, `chat_id`). Refusals roll the Allow back:
+        403 `grantor_only` | `approve_first`, 422 `mandate_not_live` | `act_refused`."""
+        return self._request("POST", f"/api/v1/mandates/{mandate_id}/accept", api_key, _accept_body(version, first_post_words))
+
+    def get_readiness(self, api_key: str, *, person_id: str | None = None, plan_id: str | None = None) -> dict[str, Any]:
+        """What the person can use, before you propose a plan (`GET /api/v1/me/readiness`): `{"person_id", "wallets", "shop",
+        "connections": [{"service", "name"}], "followers", "contacts", "email_subscribers"}`. No argument reads the caller; `person_id`
+        a person you serve or work with; `plan_id` the grantor of a plan you are a party to. Anyone else: 404. Name only the listed
+        connections in your plan."""
+        return self._request("GET", _readiness_path(person_id, plan_id), api_key)
+
+    def get_plan_summary(self, api_key: str, mandate_id: str) -> dict[str, Any]:
+        """The plan in one read (`GET /api/v1/mandates/:id/summary`; grantor and grantee, else 404): `targets` (`actual` only for
+        `reported` ones, the rest carry `measured_by == "agent"`), `reported_counts`, `exercises` (`recent` as sentences), `tunings`,
+        `spend`, `ai`, `locks`, `first_check_in_at`. No message content."""
+        return self._request("GET", f"/api/v1/mandates/{mandate_id}/summary", api_key)
+
+    def pause_all(self, api_key: str, *, goal_id: str | None = None) -> dict[str, Any]:
+        """Pause every live plan and grant you gave, or one goal's (`goal_id` = a plan's mandate id or strategy_id). Idempotent:
+        `{"status": "paused", "paused", "already_paused", "count"}`. A plan's grantee may call it too, for the goal plans it holds."""
+        return self._request("POST", "/api/v1/mandates/pause_all", api_key, _goal_body(goal_id))
+
+    def resume_all(self, api_key: str, *, goal_id: str | None = None) -> dict[str, Any]:
+        """Lift exactly what `pause_all` paused: `{"status": "active" | "partly_paused", "resumed", "still_paused"}`. Grantor only:
+        a grantee gets 403 with `code == "resume_grantor_only"` ("Tap Resume on the plan to start it again."); tell the person."""
+        return self._request("POST", "/api/v1/mandates/resume_all", api_key, _goal_body(goal_id))
 
     def renew_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
         """Standing mandates only: +90 days from now."""
@@ -2033,9 +2082,25 @@ class AsyncSaltClient:
                     raise
         return latest_plan_report(await self.get_chat_messages(identity.api_key, lane_id), identity, strategy_id)
 
-    async def accept_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
+    async def accept_mandate(self, api_key: str, mandate_id: str, *, version: int | None = None, first_post_words: str | None = None) -> dict[str, Any]:
         """See SaltClient.accept_mandate."""
-        return await self._request("POST", f"/api/v1/mandates/{mandate_id}/accept", api_key)
+        return await self._request("POST", f"/api/v1/mandates/{mandate_id}/accept", api_key, _accept_body(version, first_post_words))
+
+    async def get_readiness(self, api_key: str, *, person_id: str | None = None, plan_id: str | None = None) -> dict[str, Any]:
+        """See SaltClient.get_readiness."""
+        return await self._request("GET", _readiness_path(person_id, plan_id), api_key)
+
+    async def get_plan_summary(self, api_key: str, mandate_id: str) -> dict[str, Any]:
+        """See SaltClient.get_plan_summary."""
+        return await self._request("GET", f"/api/v1/mandates/{mandate_id}/summary", api_key)
+
+    async def pause_all(self, api_key: str, *, goal_id: str | None = None) -> dict[str, Any]:
+        """See SaltClient.pause_all."""
+        return await self._request("POST", "/api/v1/mandates/pause_all", api_key, _goal_body(goal_id))
+
+    async def resume_all(self, api_key: str, *, goal_id: str | None = None) -> dict[str, Any]:
+        """See SaltClient.resume_all."""
+        return await self._request("POST", "/api/v1/mandates/resume_all", api_key, _goal_body(goal_id))
 
     async def renew_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
         return await self._request("POST", f"/api/v1/mandates/{mandate_id}/renew", api_key)
