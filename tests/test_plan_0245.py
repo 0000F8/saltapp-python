@@ -148,7 +148,7 @@ def test_drop_plan_steps_refusals_keep_their_code(code):
 
 
 def test_get_strategy_limits_reads_the_public_limits_without_a_key_and_async_matches():
-    calls, handler = recorder(httpx.Response(200, json={"live_tunable": ["pace"], "live_narrowable": ["drop_steps"], "lock_values": ["all"]}))
+    calls, handler = recorder(lambda r: httpx.Response(200, json={"live_tunable": ["pace"], "live_narrowable": ["drop_steps"], "lock_values": ["all"]}))
     assert sync_client(handler).get_strategy_limits()["live_narrowable"] == ["drop_steps"]
     assert calls[0].url.path == "/api/v1/strategies/limits" and "api-key" not in calls[0].headers
 
