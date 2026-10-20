@@ -200,3 +200,103 @@ def read_advantage_line(report: str) -> Optional[dict]:
         if stripped.startswith("advantage:"):
             return parse_advantage(stripped[len("advantage:"):].strip())
     return None
+
+
+# --- Reading the plan's report back (Salt 0.243.0) --------------------------
+# A plan's report is a work report with `kind=strategy` and a `strategy: {json}`
+# line, posted into the private lane the agent shares with the person. Salt only
+# holds ciphertext, so `SaltClient.read_plan_report` fetches the lane's messages
+# and decrypts them here with the agent's own key. The JSON is returned as the
+# writer sent it (salt-fe `parseStrategy` is the reference reader for its fields);
+# only the marker is checked. Mirrors salt-agent-sdk `parsePlanReport`.
+
+STRATEGY_REPORT_STATUSES = ("attempting", "blocked", "succeeded", "abandoned", "superseded")
+_STRATEGY_JSON_MAX = 20000
+_MARKER_RE = re.compile(r"^\[\[SALT-WORK ([^\]\n]*)\]\]\n?")
+_PGP_RE = re.compile(r"^-----BEGIN PGP MESSAGE-----")
+
+
+def parse_plan_report(plaintext: str) -> Optional[dict]:
+    """The plan report in a plaintext, `{"id", "status", "title", "strategy"[, "detail"]}`, or None when it is not a
+    `kind=strategy` work report with a readable `strategy:` line."""
+    match = _MARKER_RE.match(plaintext or "")
+    if not match:
+        return None
+    attrs: dict[str, str] = {}
+    for pair in match.group(1).split():
+        key, eq, value = pair.partition("=")
+        if eq and key:
+            attrs[key] = value
+    if attrs.get("kind") != "strategy" or not _ID_RE.match(attrs.get("id", "")):
+        return None
+    title, *rest = plaintext[match.end():].split("\n")
+    strategy: Optional[dict] = None
+    kept: list[str] = []
+    for line in rest:
+        stripped = line.strip()
+        if not stripped.startswith("strategy:"):
+            kept.append(line)
+            continue
+        raw = stripped[len("strategy:"):].strip()
+        if not raw or len(raw) > _STRATEGY_JSON_MAX:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(parsed, dict):
+            strategy = parsed
+    if strategy is None:
+        return None
+    status = strategy.get("status") if strategy.get("status") in STRATEGY_REPORT_STATUSES else attrs.get("status")
+    if status not in STRATEGY_REPORT_STATUSES:
+        return None
+    report: dict[str, Any] = {"id": attrs["id"], "status": status, "title": title.strip(), "strategy": strategy}
+    detail = "\n".join(kept).strip()
+    if detail:
+        report["detail"] = detail
+    return report
+
+
+def _when(value: Any) -> Optional[float]:
+    from datetime import datetime
+
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def latest_plan_report(messages: list, identity: Any, strategy_id: Optional[str] = None) -> Optional[dict]:
+    """The newest plan report among a lane's messages (oldest first), each decrypted with `identity` (an `Identity`);
+    a message that key cannot open is skipped. `strategy_id` keeps only that plan's reports. Adds `message_id` and
+    `created_at` from the message."""
+    from saltapp import crypto
+
+    latest: Optional[dict] = None
+    for m in messages or []:
+        if not isinstance(m, dict) or m.get("event_type") or not isinstance(m.get("message"), str):
+            continue
+        if m.get("encrypted") is False:
+            plaintext = m["message"]
+        else:
+            if not _PGP_RE.match(m["message"].strip()):
+                continue
+            try:
+                plaintext = crypto.decrypt(m["message"], identity.private_key, identity.passphrase)
+            except Exception:  # noqa: BLE001 -- predates this key, or not for it: skip, never fatal
+                continue
+        report = parse_plan_report(plaintext)
+        if report is None:
+            continue
+        if strategy_id and (report["strategy"].get("strategy_id") or report["id"]) != strategy_id:
+            continue
+        at = _when(m.get("created_at"))
+        latest_at = _when(latest.get("created_at")) if latest else None
+        # Chat order is oldest first; a later message wins unless both carry times and it is older.
+        if latest is not None and at is not None and latest_at is not None and at < latest_at:
+            continue
+        latest = {**report, **({"message_id": m["id"]} if m.get("id") is not None else {}), **({"created_at": m["created_at"]} if m.get("created_at") else {})}
+    return latest

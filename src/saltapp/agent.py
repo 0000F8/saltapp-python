@@ -614,6 +614,11 @@ class StrategyTunedContext:
         changes = body.get("changes") if isinstance(body.get("changes"), dict) else {}
         self.changes: dict[str, Any] = changes
         self.version = int(body.get("version") or 0)
+        # Salt 0.243.0: who changed it ("person", including their Undo, or "agent" for your own `tune_plan`), the old values by
+        # key, and the id of the `strategy["tunings"]` entry it made. None on a Salt older than 0.243.0.
+        self.by: str | None = body.get("by") if body.get("by") in ("person", "agent") else None
+        self.before: dict[str, Any] | None = body.get("before") if isinstance(body.get("before"), dict) else None
+        self.tuning_id: str | None = str(body["tuning_id"]) if body.get("tuning_id") is not None else None
 
 
 class ApprovalRequestedContext:
@@ -874,7 +879,7 @@ class Agent:
 
     def on_strategy_tuned(self, fn: Handler) -> Handler:
         """The person changed pace, exploring or the kind of goal on a plan this agent runs. `ctx`:
-        `StrategyTunedContext` (`.mandate_id`, `.strategy_id`, `.changes`, `.strategy`, `.version`).
+        `StrategyTunedContext` (`.mandate_id`, `.strategy_id`, `.changes`, `.strategy`, `.version`, and from Salt 0.243.0 `.by`, `.before`, `.tuning_id`).
         `changes["mode_change"]` = `{"capability", "mode"}` when it answers `request_mode_change`."""
         self._handlers["strategy_tuned"] = fn
         return fn

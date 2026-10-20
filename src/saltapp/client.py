@@ -25,6 +25,7 @@ from saltapp import crypto
 from saltapp.errors import SaltApiError, api_error
 from saltapp._version import __version__
 from saltapp.identity import Identity
+from saltapp.work import latest_plan_report
 
 _JSON = dict[str, Any]
 
@@ -70,13 +71,14 @@ def _ask_body(
     words: str | None,
     words_armored: str | None,
     encrypt_to: str | Sequence[str] | None,
-    where: str,
+    where: str | None,
     recipient_id: str | None = None,
     chat_id: str | None = None,
     own_public_key: str | None = None,
     about: str | None = None,
     media_digest: str | None = None,
     kind: str | None = None,
+    as_: str | None = None,
 ) -> dict[str, Any]:
     """The `POST /mandates/:id/asks` body. Refuses client-side what the server would 422: armor on anything but outreach,
     both words and armor, or neither. `encrypt_to` (the person's armored public key) armors `words` with the SDK's own PGP."""
@@ -98,7 +100,20 @@ def _ask_body(
         raise ValueError("request_ask: about is for room.create only.")
     if (media_digest is not None or kind is not None) and capability != "profile.post":
         raise ValueError("request_ask: media_digest / kind are for profile.post only.")
-    body: dict[str, Any] = {"capability": capability, "where": where}
+    if as_ is not None:
+        if as_ != "grantor":
+            raise ValueError('request_ask: as_ can only be "grantor".')
+        if capability not in ("profile.post", "room.create"):
+            raise ValueError('request_ask: as_="grantor" is for profile.post and room.create only.')
+        if words_armored is not None or encrypt_to is not None or kind == "reply" or media_digest is not None:
+            raise ValueError('request_ask: as_="grantor" asks are plain new posts or rooms: no replies, media or armored words.')
+    elif where is None:
+        raise ValueError("request_ask: say where it goes.")
+    body: dict[str, Any] = {"capability": capability}
+    if where is not None:
+        body["where"] = where
+    if as_ is not None:
+        body["as"] = as_
     if about is not None:
         body["about"] = about
     if media_digest is not None:
@@ -235,6 +250,8 @@ def _maybe_asked(status_code: int, data: Any) -> Any:
         for key in ("approved", "needed"):
             if isinstance(data.get(key), int):
                 asked[key] = data[key]
+        if data.get("as") == "grantor":
+            asked["as"] = "grantor"
         return asked
     return data
 
@@ -1101,7 +1118,7 @@ class SaltClient:
         mandate_id: str,
         *,
         capability: str,
-        where: str,
+        where: str | None = None,
         words: str | None = None,
         words_armored: str | None = None,
         encrypt_to: str | Sequence[str] | None = None,
@@ -1111,6 +1128,7 @@ class SaltClient:
         about: str | None = None,
         media_digest: str | None = None,
         kind: str | None = None,
+        as_: str | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """Ask the person's OK for ONE act before you do it (approve-first, Salt 0.240.0): a public post (`profile.post`),
@@ -1123,8 +1141,12 @@ class SaltClient:
         generated unless you pass `idempotency_key`; the same key replays the same ask. For outreach pass `words_armored`,
         or `words` with `encrypt_to` (the person's armored public key, or a list) AND `own_public_key`: an outreach ask is sealed to the person and to you, so you can read the final text back after an edit (ValueError without `own_public_key`); outreach also names its target with exactly one of `recipient_id` | `chat_id` (ValueError before the call otherwise). For `room.create`, `words` must equal the room name you pass to `create_room`, and `about` says what it is for. For `profile.post`, `kind` is "post" | "reply", and `media_digest` (`media_digest(bytes)`, sha256 hex) pins the media. Errors: 409
         `idempotency_mismatch`, 429 (waiting on earlier approvals; `retry_after`), 422 `not_askable` | `no_grant` |
-        `invalid_words` | `invalid_where`."""
-        body = _ask_body(capability, words, words_armored, encrypt_to, where, recipient_id, chat_id, own_public_key, about, media_digest, kind)
+        `invalid_words` | `invalid_where`.
+        `as_="grantor"` (`profile.post` | `room.create` only; leave `where` out, the destination is fixed) asks the person to post
+        this, or open a public room, AS THEMSELVES: on their Allow Salt posts the words (their edit if they edited) once and you never
+        post it. The answer carries `"as": "grantor"`; you hear `approval_decided` and `summary["result"]` has `message_id` or `chat_id`.
+        No replies, media or armored words (ValueError; the API says `as_post_only`). 422 `invalid_as` | `as_not_allowed`."""
+        body = _ask_body(capability, words, words_armored, encrypt_to, where, recipient_id, chat_id, own_public_key, about, media_digest, kind, as_)
         return self._request(
             "POST", f"/api/v1/mandates/{mandate_id}/asks", api_key, body, idempotency_key=idempotency_key or str(uuid.uuid4())
         )
@@ -1144,6 +1166,64 @@ class SaltClient:
         (applied exactly like `tune_strategy`; the agent hears `strategy_tuned`) or "decline" (nothing changes; the
         agent hears `strategy_tune_declined`). 404 `request_not_open` when it was replaced or already answered."""
         return self._request("POST", f"/api/v1/mandates/{mandate_id}/tune_requests/{request_id}/decide", api_key, {"decision": decision})
+
+    def tune_plan(
+        self,
+        api_key: str,
+        mandate_id: str,
+        *,
+        version: int,
+        explore: float | None = None,
+        goal_kind: str | None = None,
+        pace: str | None = None,
+    ) -> dict[str, Any]:
+        """Change the pace, exploring or kind of goal of a plan YOU run, yourself, with no ask (Salt 0.243.0): the plan's
+        grantee. A key the person locked raises `SaltApiError` with `code == "plan_locked"` (`body["locked"]` names the keys): keep the
+        old value and use `request_strategy_tune` instead; read `mandate["locks"]` first. Tell the person in one line what you
+        changed (it shows in `mandate["strategy"]["tunings"]` with an Undo). Other refusals: 409 stale `version`, 422
+        `strategy_not_editable` | `invalid_strategy`, 429 `too_many_today` (10 a day per plan). A value that already holds changes
+        nothing and bumps no version."""
+        return self._request("PATCH", f"/api/v1/mandates/{mandate_id}", api_key, _tune_body(explore, goal_kind, pace, version))
+
+    def lock_plan(self, api_key: str, mandate_id: str, *, version: int, locks: Sequence[str]) -> dict[str, Any]:
+        """For the owner's client: keep a running plan as it is. `locks` is any of "pace" | "explore" | "goal_kind", or ["all"],
+        or [] to unlock; it replaces the current locks (`mandate["locks"]`). While locked, the agent's `tune_plan` is refused
+        422 `plan_locked`. Grantor only (403 `locks_grantor_only`). The agent is sent no event."""
+        return self._request("PATCH", f"/api/v1/mandates/{mandate_id}", api_key, {"version": version, "locks": list(locks)})
+
+    def undo_tuning(self, api_key: str, mandate_id: str, tuning_id: str) -> dict[str, Any]:
+        """For the owner's client: undo one change in `mandate["strategy"]["tunings"]` (the person's Undo); restores the
+        values from before it. The plan's grantor only (404 otherwise). 422 `already_undone` | `strategy_not_editable`, 409
+        `tuning_superseded` (it was changed again since: nothing was undone), 404 `tuning_not_found`. The agent hears `strategy_tuned`."""
+        return self._request("POST", f"/api/v1/mandates/{mandate_id}/tunings/{quote(tuning_id, safe='')}/undo", api_key)
+
+    def report_count(self, api_key: str, mandate_id: str, *, metric_key: str, value: float, note: str | None = None) -> dict[str, Any]:
+        """For the owner's client: a number the person counts themselves for a plan target whose `source` is `reported`
+        (`metric_key` is that target's `metric`). Grantor only (403 `grantor_only`; you cannot report a count to your own plan),
+        on a running plan. `value` is the count now, not a +1. 201 with the stored count. 422 `unknown_metric` (with `metrics`) |
+        `invalid_value` | `invalid_note` | `plan_not_running`, 429 `too_many_today`."""
+        body: dict[str, Any] = {"metric_key": metric_key, "value": value}
+        if note is not None:
+            body["note"] = note
+        return self._request("POST", f"/api/v1/mandates/{mandate_id}/reported_counts", api_key, body)
+
+    def read_plan_report(
+        self, identity: Identity, chat_id: str, *, requester_id: str | None = None, strategy_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """The latest `kind=strategy` work report in the chat's private lane, decrypted with `identity`'s own key (Salt only holds
+        ciphertext). With `requester_id` (the person the lane is shared with) the lane is opened under `chat_id` as posting a report does;
+        without it `chat_id` is read as the lane itself. `strategy_id` keeps only that plan's reports. Returns
+        `{"id", "status", "title", "strategy", "message_id", "created_at"}` (`strategy` is the report's JSON: `goal`, `next_check_in`,
+        `progress`, `steps`, `targets`...) or None when the lane holds none. A lane message your key cannot open is skipped. HTTP
+        errors (no such chat, not a member) raise `SaltApiError`."""
+        lane_id = chat_id
+        if requester_id is not None:
+            try:
+                lane_id = (self.open_sidechain(identity.api_key, chat_id, requester_id).get("session") or {}).get("id", chat_id)
+            except SaltApiError as exc:
+                if exc.status != 422:  # 422 "This is already a private lane.": chat_id is the lane
+                    raise
+        return latest_plan_report(self.get_chat_messages(identity.api_key, lane_id), identity, strategy_id)
 
     def accept_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
         """Grantee accepts an offered mandate (binds its current key
@@ -1883,7 +1963,7 @@ class AsyncSaltClient:
         mandate_id: str,
         *,
         capability: str,
-        where: str,
+        where: str | None = None,
         words: str | None = None,
         words_armored: str | None = None,
         encrypt_to: str | Sequence[str] | None = None,
@@ -1893,10 +1973,11 @@ class AsyncSaltClient:
         about: str | None = None,
         media_digest: str | None = None,
         kind: str | None = None,
+        as_: str | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """See SaltClient.request_ask."""
-        body = _ask_body(capability, words, words_armored, encrypt_to, where, recipient_id, chat_id, own_public_key, about, media_digest, kind)
+        body = _ask_body(capability, words, words_armored, encrypt_to, where, recipient_id, chat_id, own_public_key, about, media_digest, kind, as_)
         return await self._request(
             "POST", f"/api/v1/mandates/{mandate_id}/asks", api_key, body, idempotency_key=idempotency_key or str(uuid.uuid4())
         )
@@ -1910,6 +1991,47 @@ class AsyncSaltClient:
     async def decide_strategy_tune(self, api_key: str, mandate_id: str, request_id: str, decision: str) -> dict[str, Any]:
         """See SaltClient.decide_strategy_tune."""
         return await self._request("POST", f"/api/v1/mandates/{mandate_id}/tune_requests/{request_id}/decide", api_key, {"decision": decision})
+
+    async def tune_plan(
+        self,
+        api_key: str,
+        mandate_id: str,
+        *,
+        version: int,
+        explore: float | None = None,
+        goal_kind: str | None = None,
+        pace: str | None = None,
+    ) -> dict[str, Any]:
+        """See SaltClient.tune_plan."""
+        return await self._request("PATCH", f"/api/v1/mandates/{mandate_id}", api_key, _tune_body(explore, goal_kind, pace, version))
+
+    async def lock_plan(self, api_key: str, mandate_id: str, *, version: int, locks: Sequence[str]) -> dict[str, Any]:
+        """See SaltClient.lock_plan."""
+        return await self._request("PATCH", f"/api/v1/mandates/{mandate_id}", api_key, {"version": version, "locks": list(locks)})
+
+    async def undo_tuning(self, api_key: str, mandate_id: str, tuning_id: str) -> dict[str, Any]:
+        """See SaltClient.undo_tuning."""
+        return await self._request("POST", f"/api/v1/mandates/{mandate_id}/tunings/{quote(tuning_id, safe='')}/undo", api_key)
+
+    async def report_count(self, api_key: str, mandate_id: str, *, metric_key: str, value: float, note: str | None = None) -> dict[str, Any]:
+        """See SaltClient.report_count."""
+        body: dict[str, Any] = {"metric_key": metric_key, "value": value}
+        if note is not None:
+            body["note"] = note
+        return await self._request("POST", f"/api/v1/mandates/{mandate_id}/reported_counts", api_key, body)
+
+    async def read_plan_report(
+        self, identity: Identity, chat_id: str, *, requester_id: str | None = None, strategy_id: str | None = None
+    ) -> dict[str, Any] | None:
+        """See SaltClient.read_plan_report."""
+        lane_id = chat_id
+        if requester_id is not None:
+            try:
+                lane_id = ((await self.open_sidechain(identity.api_key, chat_id, requester_id)).get("session") or {}).get("id", chat_id)
+            except SaltApiError as exc:
+                if exc.status != 422:  # 422 "This is already a private lane.": chat_id is the lane
+                    raise
+        return latest_plan_report(await self.get_chat_messages(identity.api_key, lane_id), identity, strategy_id)
 
     async def accept_mandate(self, api_key: str, mandate_id: str) -> dict[str, Any]:
         """See SaltClient.accept_mandate."""
