@@ -11,8 +11,11 @@
 # webhook (ASGI) or socket mode.
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
+import os
+import pathlib
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -21,8 +24,8 @@ from urllib.parse import quote, urlencode
 
 import httpx
 
-from saltapp import crypto
-from saltapp.errors import SaltApiError, api_error
+from saltapp import crypto, media as _media
+from saltapp.errors import SaltApiError, SaltAppError, api_error
 from saltapp._version import __version__
 from saltapp.identity import Identity
 from saltapp.work import latest_plan_report
@@ -873,6 +876,140 @@ class SaltClient:
             self._request("POST", f"/api/v1/chats/{chat_id}/typing", api_key, {})
         except Exception:  # noqa: BLE001 -- non-fatal by design
             pass
+
+    # -- live and short video (media build; see saltapp.media for the shapes) --
+
+    def start_live(self, api_key: str, chat_id: str, source_type: str, *, title: str | None = None, record: bool | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
+        """Start a live session (`POST /api/v1/live_sessions`). Creators only, in an open room you belong to.
+        Returns `{live_session, publish}`; `publish` ({ingest_endpoint, stream_key, rtmps_url}) appears
+        ONLY here, so keep `stream_key` secret. An agent has no camera: use `source_type="rtmp"` and push
+        with ffmpeg to `rtmps_url + stream_key`."""
+        return self._request("POST", "/api/v1/live_sessions", api_key, _media.live_start_body(chat_id, source_type, title, record), idempotency_key=idempotency_key)
+
+    def get_live_session(self, api_key: str, live_session_id: str) -> dict[str, Any]:
+        """`GET /api/v1/live_sessions/:id` -> `{live_session}`."""
+        return self._request("GET", f"/api/v1/live_sessions/{quote(str(live_session_id), safe='')}", api_key)
+
+    def get_chat_live(self, api_key: str, chat_id: str) -> dict[str, Any]:
+        """`GET /api/v1/chats/:chat_id/live` -> `{live_session}` (null unless connecting or live)."""
+        return self._request("GET", f"/api/v1/chats/{quote(str(chat_id), safe='')}/live", api_key)
+
+    def end_live(self, api_key: str, live_session_id: str) -> dict[str, Any]:
+        """`POST /api/v1/live_sessions/:id/end`. The host or a room admin."""
+        return self._request("POST", f"/api/v1/live_sessions/{quote(str(live_session_id), safe='')}/end", api_key, {})
+
+    def live_playback(self, api_key: str, live_session_id: str) -> dict[str, Any]:
+        """`POST /api/v1/live_sessions/:id/playback` -> `{playback_url, expires_at, viewer_count}`; the URL is tokened for five minutes."""
+        return self._request("POST", f"/api/v1/live_sessions/{quote(str(live_session_id), safe='')}/playback", api_key, {})
+
+    def report_live(self, api_key: str, live_session_id: str, reason: str, note: str | None = None) -> Any:
+        """`POST /api/v1/live_sessions/:id/reports`."""
+        return self._request("POST", f"/api/v1/live_sessions/{quote(str(live_session_id), safe='')}/reports", api_key, {"reason": reason, **({"note": note} if note is not None else {})})
+
+    def list_stream_credentials(self, api_key: str) -> dict[str, Any]:
+        """`GET /api/v1/stream_credentials` -> `{stream_credentials}` (only `key_last4`, never the key)."""
+        return self._request("GET", "/api/v1/stream_credentials", api_key)
+
+    def create_stream_credential(self, api_key: str, chat_id: str, *, label: str | None = None, persistent: bool | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
+        """`POST /api/v1/stream_credentials` -> `{stream_credential, publish}`; `publish` is returned once."""
+        return self._request("POST", "/api/v1/stream_credentials", api_key, _media.credential_body(chat_id, label, persistent), idempotency_key=idempotency_key)
+
+    def update_stream_credential(self, api_key: str, credential_id: str, *, enabled: bool | None = None, persistent: bool | None = None) -> dict[str, Any]:
+        """`PATCH /api/v1/stream_credentials/:id`."""
+        body = {k: v for k, v in (("enabled", enabled), ("persistent", persistent)) if v is not None}
+        return self._request("PATCH", f"/api/v1/stream_credentials/{quote(str(credential_id), safe='')}", api_key, body)
+
+    def rotate_stream_credential(self, api_key: str, credential_id: str) -> dict[str, Any]:
+        """`POST /api/v1/stream_credentials/:id/rotate` -> `{stream_credential, publish}`; the old key stops working."""
+        return self._request("POST", f"/api/v1/stream_credentials/{quote(str(credential_id), safe='')}/rotate", api_key, {})
+
+    def delete_stream_credential(self, api_key: str, credential_id: str) -> None:
+        """`DELETE /api/v1/stream_credentials/:id`."""
+        self._request("DELETE", f"/api/v1/stream_credentials/{quote(str(credential_id), safe='')}", api_key)
+
+    def create_media_upload(self, api_key: str, byte_size: int, content_type: str, filename: str | None = None) -> dict[str, Any]:
+        """`POST /api/v1/media` -> `{media, upload: {upload_id, part_size, parts: [{n, url}]}}`. Creators only; up to 100 MB of mp4, quicktime or webm. Most callers want `upload_video`."""
+        return self._request("POST", "/api/v1/media", api_key, _media.media_create_body(byte_size, content_type, filename))
+
+    def complete_media_upload(self, api_key: str, media_id: str, upload_id: str, parts: list[dict[str, Any]]) -> dict[str, Any]:
+        """`POST /api/v1/media/:id/complete` with `parts=[{"n": 1, "etag": "..."}]` -> `{media}` in state processing."""
+        return self._request("POST", f"/api/v1/media/{quote(str(media_id), safe='')}/complete", api_key, {"upload_id": upload_id, "parts": parts})
+
+    def get_media(self, api_key: str, media_id: str) -> dict[str, Any]:
+        """`GET /api/v1/media/:id` -> `{media}`: state, playback URLs and the transcript once ready."""
+        return self._request("GET", f"/api/v1/media/{quote(str(media_id), safe='')}", api_key)
+
+    def media_playback(self, api_key: str, media_id: str) -> dict[str, Any]:
+        """`POST /api/v1/media/:id/playback` -> `{expires_at, cookies}`: CDN cookies to send as a `Cookie` header."""
+        return self._request("POST", f"/api/v1/media/{quote(str(media_id), safe='')}/playback", api_key, {})
+
+    def feed_playback(self, api_key: str) -> dict[str, Any]:
+        """`POST /api/v1/media/playback`: the same cookies without an asset id, to cover a whole feed page."""
+        return self._request("POST", "/api/v1/media/playback", api_key, {})
+
+    def upload_video(self, api_key: str, source: bytes | str | os.PathLike[str], content_type: str, *, filename: str | None = None, retries: int = 3) -> dict[str, Any]:
+        """Upload a video end to end: create the asset, PUT each part to its presigned URL (a failed part is
+        retried), complete. `source` is bytes or a path. Returns the MediaAsset (state processing); poll
+        `get_media` until ready, then `publish_video_post`."""
+        data = source if isinstance(source, (bytes, bytearray)) else pathlib.Path(source).read_bytes()
+        created = self.create_media_upload(api_key, len(data), content_type, filename)
+        upload = created["upload"]
+        parts: list[dict[str, Any]] = []
+        for part in upload["parts"]:
+            start = (part["n"] - 1) * upload["part_size"]
+            chunk = bytes(data[start : start + upload["part_size"]])
+            etag = None
+            last: Exception | None = None
+            for attempt in range(1, retries + 1):
+                try:
+                    res = self.http.put(part["url"], content=chunk)
+                    if res.status_code >= 400:
+                        raise SaltAppError(f"part {part['n']} upload -> {res.status_code}")
+                    etag = res.headers.get("ETag")
+                    if not etag:
+                        raise SaltAppError(f"part {part['n']} upload returned no ETag")
+                    break
+                except (httpx.HTTPError, SaltAppError) as err:
+                    last = err
+                    if attempt < retries:
+                        time.sleep(0.25 * 2 ** (attempt - 1))
+            if etag is None:
+                raise last if last else SaltAppError(f"part {part['n']} upload failed")
+            parts.append({"n": part["n"], "etag": etag})
+        done = self.complete_media_upload(api_key, created["media"]["id"], upload["upload_id"], parts)
+        return done["media"]
+
+    def publish_video_post(self, api_key: str, media_id: str, *, caption: str | None = None, chat_id: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
+        """`POST /api/v1/video_posts` -> `{video_post}`: to your profile, or to an open room with `chat_id`. Posts at once when the asset is ready, else when it becomes ready."""
+        return self._request("POST", "/api/v1/video_posts", api_key, _media.video_publish_body(media_id, caption, chat_id), idempotency_key=idempotency_key)
+
+    def get_video_post(self, api_key: str, post_id: str) -> dict[str, Any]:
+        """`GET /api/v1/video_posts/:id` -> `{video_post}`."""
+        return self._request("GET", f"/api/v1/video_posts/{quote(str(post_id), safe='')}", api_key)
+
+    def my_video_posts(self, api_key: str, status: str | None = None) -> dict[str, Any]:
+        """`GET /api/v1/video_posts/mine?status=draft|published`."""
+        return self._request("GET", "/api/v1/video_posts/mine" + (f"?status={quote(status, safe='')}" if status else ""), api_key)
+
+    def update_video_post(self, api_key: str, post_id: str, *, caption: str | None = None, status: str | None = None, also_in_chat_id: str | None = None) -> dict[str, Any]:
+        """`PATCH /api/v1/video_posts/:id`: edit the caption, hide it, or publish a draft with `status="published"`."""
+        return self._request("PATCH", f"/api/v1/video_posts/{quote(str(post_id), safe='')}", api_key, _media.video_update_body(caption, status, also_in_chat_id))
+
+    def delete_video_post(self, api_key: str, post_id: str) -> None:
+        """`DELETE /api/v1/video_posts/:id`. On a draft this discards it and deletes the bytes."""
+        self._request("DELETE", f"/api/v1/video_posts/{quote(str(post_id), safe='')}", api_key)
+
+    def report_video_post(self, api_key: str, post_id: str, reason: str, note: str | None = None) -> Any:
+        """`POST /api/v1/video_posts/:id/reports`."""
+        return self._request("POST", f"/api/v1/video_posts/{quote(str(post_id), safe='')}/reports", api_key, {"reason": reason, **({"note": note} if note is not None else {})})
+
+    def video_feed(self, api_key: str, *, scope: str | None = None, chat_id: str | None = None, before_seq: int | None = None, limit: int | None = None) -> dict[str, Any]:
+        """`GET /api/v1/video/feed` -> `{items, live, next_before_seq}`. Pass `next_before_seq` as `before_seq` for the next page."""
+        return self._request("GET", "/api/v1/video/feed" + _media.feed_query(scope, chat_id, before_seq, limit), api_key)
+
+    def send_video_events(self, api_key: str, events: list[dict[str, Any]]) -> None:
+        """`POST /api/v1/video/events` with `[{"post_id", "kind", "at"}]` (answers 202)."""
+        self._request("POST", "/api/v1/video/events", api_key, {"events": events})
 
     def react(self, api_key: str, message_id: str, emoji: str) -> dict[str, Any]:
         """React to a message with ONE emoji (`POST /api/v1/messages/:id/reactions`).
@@ -1856,6 +1993,140 @@ class AsyncSaltClient:
             await self._request("POST", f"/api/v1/chats/{chat_id}/typing", api_key, {})
         except Exception:  # noqa: BLE001
             pass
+
+    # -- live and short video (media build; see saltapp.media for the shapes) --
+
+    async def start_live(self, api_key: str, chat_id: str, source_type: str, *, title: str | None = None, record: bool | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
+        """Start a live session (`POST /api/v1/live_sessions`). Creators only, in an open room you belong to.
+        Returns `{live_session, publish}`; `publish` ({ingest_endpoint, stream_key, rtmps_url}) appears
+        ONLY here, so keep `stream_key` secret. An agent has no camera: use `source_type="rtmp"` and push
+        with ffmpeg to `rtmps_url + stream_key`."""
+        return await self._request("POST", "/api/v1/live_sessions", api_key, _media.live_start_body(chat_id, source_type, title, record), idempotency_key=idempotency_key)
+
+    async def get_live_session(self, api_key: str, live_session_id: str) -> dict[str, Any]:
+        """`GET /api/v1/live_sessions/:id` -> `{live_session}`."""
+        return await self._request("GET", f"/api/v1/live_sessions/{quote(str(live_session_id), safe='')}", api_key)
+
+    async def get_chat_live(self, api_key: str, chat_id: str) -> dict[str, Any]:
+        """`GET /api/v1/chats/:chat_id/live` -> `{live_session}` (null unless connecting or live)."""
+        return await self._request("GET", f"/api/v1/chats/{quote(str(chat_id), safe='')}/live", api_key)
+
+    async def end_live(self, api_key: str, live_session_id: str) -> dict[str, Any]:
+        """`POST /api/v1/live_sessions/:id/end`. The host or a room admin."""
+        return await self._request("POST", f"/api/v1/live_sessions/{quote(str(live_session_id), safe='')}/end", api_key, {})
+
+    async def live_playback(self, api_key: str, live_session_id: str) -> dict[str, Any]:
+        """`POST /api/v1/live_sessions/:id/playback` -> `{playback_url, expires_at, viewer_count}`; the URL is tokened for five minutes."""
+        return await self._request("POST", f"/api/v1/live_sessions/{quote(str(live_session_id), safe='')}/playback", api_key, {})
+
+    async def report_live(self, api_key: str, live_session_id: str, reason: str, note: str | None = None) -> Any:
+        """`POST /api/v1/live_sessions/:id/reports`."""
+        return await self._request("POST", f"/api/v1/live_sessions/{quote(str(live_session_id), safe='')}/reports", api_key, {"reason": reason, **({"note": note} if note is not None else {})})
+
+    async def list_stream_credentials(self, api_key: str) -> dict[str, Any]:
+        """`GET /api/v1/stream_credentials` -> `{stream_credentials}` (only `key_last4`, never the key)."""
+        return await self._request("GET", "/api/v1/stream_credentials", api_key)
+
+    async def create_stream_credential(self, api_key: str, chat_id: str, *, label: str | None = None, persistent: bool | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
+        """`POST /api/v1/stream_credentials` -> `{stream_credential, publish}`; `publish` is returned once."""
+        return await self._request("POST", "/api/v1/stream_credentials", api_key, _media.credential_body(chat_id, label, persistent), idempotency_key=idempotency_key)
+
+    async def update_stream_credential(self, api_key: str, credential_id: str, *, enabled: bool | None = None, persistent: bool | None = None) -> dict[str, Any]:
+        """`PATCH /api/v1/stream_credentials/:id`."""
+        body = {k: v for k, v in (("enabled", enabled), ("persistent", persistent)) if v is not None}
+        return await self._request("PATCH", f"/api/v1/stream_credentials/{quote(str(credential_id), safe='')}", api_key, body)
+
+    async def rotate_stream_credential(self, api_key: str, credential_id: str) -> dict[str, Any]:
+        """`POST /api/v1/stream_credentials/:id/rotate` -> `{stream_credential, publish}`; the old key stops working."""
+        return await self._request("POST", f"/api/v1/stream_credentials/{quote(str(credential_id), safe='')}/rotate", api_key, {})
+
+    async def delete_stream_credential(self, api_key: str, credential_id: str) -> None:
+        """`DELETE /api/v1/stream_credentials/:id`."""
+        await self._request("DELETE", f"/api/v1/stream_credentials/{quote(str(credential_id), safe='')}", api_key)
+
+    async def create_media_upload(self, api_key: str, byte_size: int, content_type: str, filename: str | None = None) -> dict[str, Any]:
+        """`POST /api/v1/media` -> `{media, upload: {upload_id, part_size, parts: [{n, url}]}}`. Creators only; up to 100 MB of mp4, quicktime or webm. Most callers want `upload_video`."""
+        return await self._request("POST", "/api/v1/media", api_key, _media.media_create_body(byte_size, content_type, filename))
+
+    async def complete_media_upload(self, api_key: str, media_id: str, upload_id: str, parts: list[dict[str, Any]]) -> dict[str, Any]:
+        """`POST /api/v1/media/:id/complete` with `parts=[{"n": 1, "etag": "..."}]` -> `{media}` in state processing."""
+        return await self._request("POST", f"/api/v1/media/{quote(str(media_id), safe='')}/complete", api_key, {"upload_id": upload_id, "parts": parts})
+
+    async def get_media(self, api_key: str, media_id: str) -> dict[str, Any]:
+        """`GET /api/v1/media/:id` -> `{media}`: state, playback URLs and the transcript once ready."""
+        return await self._request("GET", f"/api/v1/media/{quote(str(media_id), safe='')}", api_key)
+
+    async def media_playback(self, api_key: str, media_id: str) -> dict[str, Any]:
+        """`POST /api/v1/media/:id/playback` -> `{expires_at, cookies}`: CDN cookies to send as a `Cookie` header."""
+        return await self._request("POST", f"/api/v1/media/{quote(str(media_id), safe='')}/playback", api_key, {})
+
+    async def feed_playback(self, api_key: str) -> dict[str, Any]:
+        """`POST /api/v1/media/playback`: the same cookies without an asset id, to cover a whole feed page."""
+        return await self._request("POST", "/api/v1/media/playback", api_key, {})
+
+    async def upload_video(self, api_key: str, source: bytes | str | os.PathLike[str], content_type: str, *, filename: str | None = None, retries: int = 3) -> dict[str, Any]:
+        """Upload a video end to end: create the asset, PUT each part to its presigned URL (a failed part is
+        retried), complete. `source` is bytes or a path. Returns the MediaAsset (state processing); poll
+        `get_media` until ready, then `publish_video_post`."""
+        data = source if isinstance(source, (bytes, bytearray)) else pathlib.Path(source).read_bytes()
+        created = await self.create_media_upload(api_key, len(data), content_type, filename)
+        upload = created["upload"]
+        parts: list[dict[str, Any]] = []
+        for part in upload["parts"]:
+            start = (part["n"] - 1) * upload["part_size"]
+            chunk = bytes(data[start : start + upload["part_size"]])
+            etag = None
+            last: Exception | None = None
+            for attempt in range(1, retries + 1):
+                try:
+                    res = await self.http.put(part["url"], content=chunk)
+                    if res.status_code >= 400:
+                        raise SaltAppError(f"part {part['n']} upload -> {res.status_code}")
+                    etag = res.headers.get("ETag")
+                    if not etag:
+                        raise SaltAppError(f"part {part['n']} upload returned no ETag")
+                    break
+                except (httpx.HTTPError, SaltAppError) as err:
+                    last = err
+                    if attempt < retries:
+                        await asyncio.sleep(0.25 * 2 ** (attempt - 1))
+            if etag is None:
+                raise last if last else SaltAppError(f"part {part['n']} upload failed")
+            parts.append({"n": part["n"], "etag": etag})
+        done = await self.complete_media_upload(api_key, created["media"]["id"], upload["upload_id"], parts)
+        return done["media"]
+
+    async def publish_video_post(self, api_key: str, media_id: str, *, caption: str | None = None, chat_id: str | None = None, idempotency_key: str | None = None) -> dict[str, Any]:
+        """`POST /api/v1/video_posts` -> `{video_post}`: to your profile, or to an open room with `chat_id`. Posts at once when the asset is ready, else when it becomes ready."""
+        return await self._request("POST", "/api/v1/video_posts", api_key, _media.video_publish_body(media_id, caption, chat_id), idempotency_key=idempotency_key)
+
+    async def get_video_post(self, api_key: str, post_id: str) -> dict[str, Any]:
+        """`GET /api/v1/video_posts/:id` -> `{video_post}`."""
+        return await self._request("GET", f"/api/v1/video_posts/{quote(str(post_id), safe='')}", api_key)
+
+    async def my_video_posts(self, api_key: str, status: str | None = None) -> dict[str, Any]:
+        """`GET /api/v1/video_posts/mine?status=draft|published`."""
+        return await self._request("GET", "/api/v1/video_posts/mine" + (f"?status={quote(status, safe='')}" if status else ""), api_key)
+
+    async def update_video_post(self, api_key: str, post_id: str, *, caption: str | None = None, status: str | None = None, also_in_chat_id: str | None = None) -> dict[str, Any]:
+        """`PATCH /api/v1/video_posts/:id`: edit the caption, hide it, or publish a draft with `status="published"`."""
+        return await self._request("PATCH", f"/api/v1/video_posts/{quote(str(post_id), safe='')}", api_key, _media.video_update_body(caption, status, also_in_chat_id))
+
+    async def delete_video_post(self, api_key: str, post_id: str) -> None:
+        """`DELETE /api/v1/video_posts/:id`. On a draft this discards it and deletes the bytes."""
+        await self._request("DELETE", f"/api/v1/video_posts/{quote(str(post_id), safe='')}", api_key)
+
+    async def report_video_post(self, api_key: str, post_id: str, reason: str, note: str | None = None) -> Any:
+        """`POST /api/v1/video_posts/:id/reports`."""
+        return await self._request("POST", f"/api/v1/video_posts/{quote(str(post_id), safe='')}/reports", api_key, {"reason": reason, **({"note": note} if note is not None else {})})
+
+    async def video_feed(self, api_key: str, *, scope: str | None = None, chat_id: str | None = None, before_seq: int | None = None, limit: int | None = None) -> dict[str, Any]:
+        """`GET /api/v1/video/feed` -> `{items, live, next_before_seq}`. Pass `next_before_seq` as `before_seq` for the next page."""
+        return await self._request("GET", "/api/v1/video/feed" + _media.feed_query(scope, chat_id, before_seq, limit), api_key)
+
+    async def send_video_events(self, api_key: str, events: list[dict[str, Any]]) -> None:
+        """`POST /api/v1/video/events` with `[{"post_id", "kind", "at"}]` (answers 202)."""
+        await self._request("POST", "/api/v1/video/events", api_key, {"events": events})
 
     async def react(self, api_key: str, message_id: str, emoji: str) -> dict[str, Any]:
         """See SaltClient.react -- the owner's rule applies: sparingly, only when it relevantly complements the chat in a friendly way."""
