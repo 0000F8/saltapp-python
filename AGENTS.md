@@ -213,6 +213,14 @@ local agent on the computer does it, checks it, and answers with a checked recei
   Python host that needs it today builds on `saltapp.device` (encrypt the text with
   `crypto.encrypt_for`, post it with `client.post_message`, feed lane plaintext back through
   `decode_device_message`) and mirrors the TypeScript client's rules.
+- **Settings (op `settings`).** `settings_command(set_settings=None, *, session, seq)` builds the
+  command: no `set_settings` reads the computer's settings and state, `{"stay_awake": True}` asks
+  it to change that (the only setting an agent may set; `commands_enabled` is readable, never
+  settable). Read the `settings` result from `decode_device_message`: `{settings, state, changed,
+  refused}`, where `refused` maps a key to `person_only`, `unknown_setting`, `bad_value` or
+  `declined` (`SETTING_REFUSAL_REASONS`). A read needs only a live session; a set acts at once
+  under Full control, otherwise the person is asked first (a no or a timeout reads `declined`).
+  After a set that landed, tell the person plainly what was changed on their computer.
 - **The grant.** Full control (observe + act + apps + task, every row `auto`) runs the task's
   commands without asking; Limited asks the person first for every command. `device.shell`
   stays reserved and refused.

@@ -67,13 +67,13 @@ MUTATING_OPS: tuple[str, ...] = ("click", "type", "key", "scroll", "submit", "fo
 #: Commands an agent sends to a device.
 AGENT_OPS: tuple[str, ...] = (
     "observe", "click", "type", "key", "scroll", "submit", "focus_app", "list_apps",
-    "read_file", "write_file", "task", "stop", "cancel", "shell",
+    "settings", "read_file", "write_file", "task", "stop", "cancel", "shell",
 )
 
 #: Results a device sends back. ``progress`` is NON-final (same ``re`` as its task);
 #: ``task_result`` is the final answer to a ``task``.
 DEVICE_RESULT_OPS: tuple[str, ...] = (
-    "ack", "observation", "apps", "file", "ask", "error", "ended", "progress", "task_result",
+    "ack", "observation", "apps", "settings", "file", "ask", "error", "ended", "progress", "task_result",
 )
 
 DEVICE_ERROR_CODES: tuple[str, ...] = (
@@ -91,6 +91,7 @@ CAPABILITY_FOR_OP: dict[str, Optional[str]] = {
     "submit": "device.act",
     "focus_app": "device.apps",
     "list_apps": "device.apps",
+    "settings": None,  # no capability of its own: any active session reads; a set follows the command-approval rule on the device
     "read_file": "device.files.read",
     "write_file": "device.files.write",
     "task": "device.task",
@@ -129,6 +130,13 @@ TASK_DEVICE_GRACE_MS = 15_000
 TASK_CLIENT_GRACE_MS = 30_000
 
 TASK_STATUSES: tuple[str, ...] = ("done", "failed", "stopped", "denied", "timeout", "paused_out")
+#: The settings an agent can set over the wire (op ``settings``, body ``{"set": {...}}``).
+#: ``commands_enabled`` is readable, never settable.
+SETTABLE_SETTINGS: tuple[str, ...] = ("stay_awake",)
+
+#: Why a ``set`` key was not applied (the result's ``refused`` maps key -> reason).
+SETTING_REFUSAL_REASONS: tuple[str, ...] = ("person_only", "unknown_setting", "bad_value", "declined")
+
 TASK_STEP_KINDS: tuple[str, ...] = ("command", "look", "observe", "act", "apps", "ask", "check")
 
 
@@ -396,6 +404,38 @@ def task_command(
         id=id or device_message_id(now),
         seq=seq,
         op="task",
+        session=session,
+        exp=exp if exp is not None else now + COMMAND_TTL_MS,
+    )
+    return encode_device_message(header, body)
+
+
+def settings_command(
+    set_settings: Optional[Mapping[str, Any]] = None,
+    *,
+    session: str,
+    seq: int,
+    id: Optional[str] = None,
+    exp: Optional[int] = None,
+    now_ms: Optional[int] = None,
+) -> str:
+    """The plaintext of a ``settings`` command. With no ``set_settings`` it reads (body ``{}``);
+    with ``{"stay_awake": True}`` it asks the computer to change that setting (body
+    ``{"set": {...}}``). The answer is a ``settings`` result: ``settings``, ``state``, ``changed``
+    and ``refused`` (key -> one of ``SETTING_REFUSAL_REASONS``); read it from ``decode_device_message``.
+    Only ``SETTABLE_SETTINGS`` are settable by an agent; other keys are sent as given and the
+    device refuses them (``person_only`` / ``unknown_setting`` / ``bad_value``), so the reason
+    reaches you. A set may wait on the person's approval at the computer or phone; ``declined``
+    covers a no and a timeout."""
+    if set_settings is not None and not isinstance(set_settings, Mapping):
+        raise DeviceProtocolError("bad_args", "set_settings must be a mapping")
+    body: dict[str, Any] = {} if set_settings is None else {"set": dict(set_settings)}
+    now = int(time.time() * 1000) if now_ms is None else now_ms
+    header = DeviceHeader(
+        v=DEVICE_PROTOCOL_VERSION,
+        id=id or device_message_id(now),
+        seq=seq,
+        op="settings",
         session=session,
         exp=exp if exp is not None else now + COMMAND_TTL_MS,
     )

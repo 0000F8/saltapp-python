@@ -209,3 +209,20 @@ def test_device_message_id_is_26_crockford_characters_and_time_ordered():
     assert len(a) == 26 and a < b
     assert set(a) <= set("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
     assert dev.device_message_id(1_760_000_000_000, rand=lambda: 0.5) == dev.device_message_id(1_760_000_000_000, rand=lambda: 0.5)
+
+
+def test_settings_command_reads_with_an_empty_body_and_sets_with_a_set_key():
+    read = dev.settings_command(session="s1", seq=3, id="S1", now_ms=1_760_000_000_000)
+    assert read == "[[SALT-DEVICE v=1 id=S1 seq=3 op=settings session=s1 exp=1760000030000]]\n{}"
+    write = dev.settings_command({"stay_awake": True}, session="s1", seq=4, id="S2", now_ms=1_760_000_000_000)
+    m = decode_device_message(write)
+    assert m.header.op == "settings" and m.body == {"set": {"stay_awake": True}}
+    with pytest.raises(DeviceProtocolError):
+        dev.settings_command([("stay_awake", True)], session="s1", seq=5)  # type: ignore[arg-type]
+
+
+def test_settings_op_is_known_needs_no_capability_and_answers_settings():
+    assert "settings" in dev.AGENT_OPS and "settings" in dev.DEVICE_RESULT_OPS
+    assert dev.CAPABILITY_FOR_OP["settings"] is None
+    assert dev.SETTABLE_SETTINGS == ("stay_awake",)
+    assert dev.SETTING_REFUSAL_REASONS == ("person_only", "unknown_setting", "bad_value", "declined")
