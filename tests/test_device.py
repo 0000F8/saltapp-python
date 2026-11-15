@@ -224,5 +224,4 @@ def test_settings_command_reads_with_an_empty_body_and_sets_with_a_set_key():
 def test_settings_op_is_known_needs_no_capability_and_answers_settings():
     assert "settings" in dev.AGENT_OPS and "settings" in dev.DEVICE_RESULT_OPS
     assert dev.CAPABILITY_FOR_OP["settings"] is None
-    assert dev.SETTABLE_SETTINGS == ("stay_awake",)
-    assert dev.SETTING_REFUSAL_REASONS == ("person_only", "unknown_setting", "bad_value", "declined")
+    assert dev.SETTING_REFUSAL_REASONS == ("unknown_setting", "bad_value", "declined")

@@ -130,12 +130,9 @@ TASK_DEVICE_GRACE_MS = 15_000
 TASK_CLIENT_GRACE_MS = 30_000
 
 TASK_STATUSES: tuple[str, ...] = ("done", "failed", "stopped", "denied", "timeout", "paused_out")
-#: The settings an agent can set over the wire (op ``settings``, body ``{"set": {...}}``).
-#: ``commands_enabled`` is readable, never settable.
-SETTABLE_SETTINGS: tuple[str, ...] = ("stay_awake",)
 
 #: Why a ``set`` key was not applied (the result's ``refused`` maps key -> reason).
-SETTING_REFUSAL_REASONS: tuple[str, ...] = ("person_only", "unknown_setting", "bad_value", "declined")
+SETTING_REFUSAL_REASONS: tuple[str, ...] = ("unknown_setting", "bad_value", "declined")
 
 TASK_STEP_KINDS: tuple[str, ...] = ("command", "look", "observe", "act", "apps", "ask", "check")
 
@@ -420,11 +417,11 @@ def settings_command(
     now_ms: Optional[int] = None,
 ) -> str:
     """The plaintext of a ``settings`` command. With no ``set_settings`` it reads (body ``{}``);
-    with ``{"stay_awake": True}`` it asks the computer to change that setting (body
+    with e.g. ``{"stay_awake": True}`` it asks the computer to change that setting (body
     ``{"set": {...}}``). The answer is a ``settings`` result: ``settings``, ``state``, ``changed``
     and ``refused`` (key -> one of ``SETTING_REFUSAL_REASONS``); read it from ``decode_device_message``.
-    Only ``SETTABLE_SETTINGS`` are settable by an agent; other keys are sent as given and the
-    device refuses them (``person_only`` / ``unknown_setting`` / ``bad_value``), so the reason
+    Every setting the device has is settable by an agent (``commands_enabled`` included); a key it
+    does not know is refused ``unknown_setting`` and a wrong type ``bad_value``, so the reason
     reaches you. A set may wait on the person's approval at the computer or phone; ``declined``
     covers a no and a timeout."""
     if set_settings is not None and not isinstance(set_settings, Mapping):

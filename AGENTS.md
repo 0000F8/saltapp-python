@@ -215,9 +215,8 @@ local agent on the computer does it, checks it, and answers with a checked recei
   `decode_device_message`) and mirrors the TypeScript client's rules.
 - **Settings (op `settings`).** `settings_command(set_settings=None, *, session, seq)` builds the
   command: no `set_settings` reads the computer's settings and state, `{"stay_awake": True}` asks
-  it to change that (the only setting an agent may set; `commands_enabled` is readable, never
-  settable). Read the `settings` result from `decode_device_message`: `{settings, state, changed,
-  refused}`, where `refused` maps a key to `person_only`, `unknown_setting`, `bad_value` or
+  it to change that (every setting is settable by an agent, `commands_enabled` included). Read the `settings` result from `decode_device_message`: `{settings, state, changed,
+  refused}`, where `refused` maps a key to `unknown_setting`, `bad_value` or
   `declined` (`SETTING_REFUSAL_REASONS`). A read needs only a live session; a set acts at once
   under Full control, otherwise the person is asked first (a no or a timeout reads `declined`).
   After a set that landed, tell the person plainly what was changed on their computer.
