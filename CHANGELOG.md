@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.21.0 — 2026-11-15
+
+- **Device op `settings`** (grammar and builder; Salt Device 0.4.9, salt-agent-sdk 0.35.0). `settings_command(...)` builds the read (`{}`) or the set (`{"set": {...}}`); the op constants and `SETTING_REFUSAL_REASONS` (`unknown_setting`, `bad_value`, `declined`) are exported. Settings are a general map. A Python device client is still a stated gap (AGENTS.md).
+
 ## 0.20.0 — 2026-10-20
 
 - **Give Salt the goal; what's working; typed plan refusals** (Salt 0.245.0; sync and async). `client.give_goal(api_key, goal, *, deadline=None, chat_id=None, idempotency_key=None)` (`POST /api/v1/goals`) and `client.get_goal_request(api_key, id)` (`waiting | planned | declined | expired`, `mandate_id`). `client.put_working(api_key, mandate_id, *, testing=None, kept=None, dropped=None)` (`PUT /mandates/:id/working`) and `client.decide_working(api_key, mandate_id, entry_id, decision)` (`"keep" | "never"`, `POST /mandates/:id/working/decide`). Mandates carry `runner` (`self | agent | salt`), `note`, `working`, `working_at`; summary targets' `measured_by` is `person | salt | agent`, and `ai` gains `budget_from` and `paid_by` (plain dicts, no typing change). New `saltapp.GoalPlanError` (422 `no_capability`, `first_post_needs_post`, `source_unavailable`) with the server's `.sentence` and `.next`. `client.drop_plan_steps(api_key, mandate_id, *, version, steps)` (`PATCH /mandates/:id` `strategy.drop_steps`), `client.get_strategy_limits()` (`live_narrowable`); `lock_plan` accepts `"drop_steps"`; `strategy_tuned` `changes` may carry `drop_steps`. `constraints["per_week"]` documented. AGENTS.md section "An agent with no runtime: give Salt the goal". Tests in `tests/test_plan_0245.py`. Same shape as salt-agent-sdk 0.33.0.
