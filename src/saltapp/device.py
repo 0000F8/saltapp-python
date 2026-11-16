@@ -132,7 +132,7 @@ TASK_STATUSES: tuple[str, ...] = ("done", "failed", "stopped", "denied", "timeou
 #: Why a ``set`` key was not applied (the result's ``refused`` maps key -> reason).
 SETTING_REFUSAL_REASONS: tuple[str, ...] = ("unknown_setting", "bad_value", "declined")
 
-TASK_STEP_KINDS: tuple[str, ...] = ("command", "look", "observe", "act", "apps", "ask", "check")
+TASK_STEP_KINDS: tuple[str, ...] = ("command", "look", "observe", "act", "apps", "ask", "check", "amend")
 
 
 class DeviceProtocolError(SaltAppError):
