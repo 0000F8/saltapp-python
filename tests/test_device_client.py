@@ -39,7 +39,7 @@ SESSION = "sess-1"
 CHAT = {"id": "chat-1", "readers": ["-----PUBKEY-----"]}
 
 
-async def tick(n: int = 3) -> None:
+async def tick(n: int = 6) -> None:
     for _ in range(n):
         await asyncio.sleep(0)
 

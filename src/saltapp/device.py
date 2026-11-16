@@ -122,6 +122,8 @@ TASK_ID_MAX = 64
 PROGRESS_MIN_INTERVAL_MS = 1_000
 #: An ``amend``'s ``say`` is cut to this many characters.
 AMEND_SAY_MAX = 500
+#: A task takes at most this many amends in total; the host refuses the rest with a plain progress line.
+AMEND_MAX_PER_TASK = 20
 #: A task's command deadline on the device is ``timeout_s`` + this, not COMMAND_TTL_MS.
 TASK_DEVICE_GRACE_MS = 15_000
 #: The agent waits ``timeout_s`` + this for the result before it sends ``cancel``.
@@ -500,12 +502,19 @@ def amend_command(
     seq: int,
     task_id: Optional[str] = None,
     id: Optional[str] = None,
+    exp: Optional[int] = None,
+    now_ms: Optional[int] = None,
 ) -> str:
     """The plaintext of an ``amend``: changes a task that is already running (grant ``device.task``).
     ``task_id`` is the task command's id (also put in the header's ``re``); leave it ``None`` when
     exactly one task is running. Out of band like ``cancel``: it consumes no sequence number, so
-    pass the newest ``seq`` used so far (at least 1); the device does not answer it. ``say`` is cut
-    to 500 characters. Raises ``DeviceProtocolError("bad_args")`` for an empty ``say`` or a bad id."""
+    pass the newest ``seq`` used so far (at least 1); the device does not answer it. It carries
+    ``exp`` (default now + ``COMMAND_TTL_MS``, epoch milliseconds) like every command: the device
+    REQUIRES it and drops a stale or replayed amend. ``say`` is at most 500 characters. Raises
+    ``DeviceProtocolError("bad_args")`` for an empty or over-long ``say`` or a bad id."""
+    if isinstance(say, str) and len(say) > AMEND_SAY_MAX:
+        raise DeviceProtocolError("bad_args", f"say is over {AMEND_SAY_MAX} characters")
+    now = int(time.time() * 1000) if now_ms is None else now_ms
     args = parse_amend({"say": say, **({"id": task_id} if task_id is not None else {})})
     if args is None:
         raise DeviceProtocolError("bad_args", "amend needs a non-empty say and an id of at most 64 characters")
@@ -515,6 +524,7 @@ def amend_command(
         seq=max(seq, 1),
         op="amend",
         session=session,
+        exp=exp if exp is not None else now + COMMAND_TTL_MS,
         re=task_id,
     )
     return encode_device_message(header, args.to_dict())

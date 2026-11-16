@@ -97,6 +97,17 @@ class LaneReaders:
     chat_id: str
     public_keys: tuple[str, ...] = ()
     ids: tuple[str, ...] = ()
+    #: Set by the client on an out-of-band send (``cancel``, ``amend``): a reader with no key is skipped
+    #: rather than stopping the send, as long as one key remains. Content-bearing sends stay strict.
+    lenient: bool = False
+
+
+class LaneReaderError(DeviceProtocolError):
+    """A send failed because of the lane's readers (one has no key, or the ids are stale). The client
+    re-reads the session and retries once."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__("failed", message)
 
 
 @dataclass
@@ -353,6 +364,51 @@ class DeviceClient:
         self._emit_state({"state": "requested"})
         self._start_approval_timer()
 
+    async def _post_lane(self, plaintext: str, readers: LaneReaders, oob: bool = False) -> None:
+        """Post one lane message. A send that failed on the lane's readers re-reads the session (fresh
+        reader ids) and tries once more, so one stale or keyless reader cannot block a ``cancel`` or an
+        ``amend``. ``oob`` marks those out-of-band sends: a keyless reader is then skipped, not fatal."""
+
+        async def send(r: LaneReaders) -> None:
+            await self._transport.post_command(plaintext, replace(r, lenient=True) if oob else r)
+
+        try:
+            await send(readers)
+        except LaneReaderError:
+            fetch = getattr(self._transport, "fetch_session", None)
+            if fetch is None or self._meta is None:
+                raise
+            try:
+                fetched = DeviceSessionMeta.coerce(await fetch(self._meta.id))
+            except Exception:  # noqa: BLE001
+                fetched = None
+            fresh = _readers_from(fetched) if fetched is not None else None
+            if fresh is None or fetched is None:
+                raise
+            self._readers = fresh
+            self._meta = replace(self._meta, chat=fetched.chat or self._meta.chat)
+            await send(fresh)
+
+    def _withdraw_after_post(self, post: "asyncio.Future[Any]") -> None:
+        """open() was cancelled while its POST was in flight: whatever the POST created is withdrawn (or
+        stopped, if it already went live) once it returns."""
+        if post.cancelled() or post.exception() is not None:
+            return
+        try:
+            created = DeviceSessionMeta.coerce(post.result())
+        except Exception:  # noqa: BLE001
+            return
+        live = created.status in ("active", "paused")
+        fn = self._transport.stop_session if live else (getattr(self._transport, "withdraw_session", None) or self._transport.stop_session)
+        self._spawn(self._best_effort(fn(created.id)))
+
+    @staticmethod
+    async def _best_effort(coro: Awaitable[Any]) -> None:
+        try:
+            await coro
+        except Exception:  # noqa: BLE001
+            pass
+
     async def _wait_open(self, waiter: "asyncio.Future[DeviceSessionMeta]") -> DeviceSessionMeta:
         """Await the open future. Cancelling the caller stops the wait and withdraws a request that is
         still waiting (best effort), so it does not hold the computer for hours."""
@@ -445,10 +501,18 @@ class DeviceClient:
             waiter = asyncio.get_running_loop().create_future()
             waiter.add_done_callback(lambda f: f.cancelled() or f.exception())  # a rejection reaches the caller below
             self._open_future = waiter
+        post = asyncio.ensure_future(self._transport.open_session(self.device_id, intent=intent))
         try:
-            created = DeviceSessionMeta.coerce(await self._transport.open_session(self.device_id, intent=intent))
+            created = DeviceSessionMeta.coerce(await asyncio.shield(post))
         except DeviceSessionLiveError as e:
             return await self._reattach(e.session_id, waiter)
+        except asyncio.CancelledError:
+            # Cancelled while the POST was in flight: the request may now exist on the server (8 hours on a
+            # sleeping computer). Withdraw it as soon as the POST says what it created.
+            self._clear_open_timer()
+            self._open_future = None
+            post.add_done_callback(self._withdraw_after_post)
+            raise
         except BaseException:
             self._clear_open_timer()
             self._open_future = None
@@ -559,7 +623,7 @@ class DeviceClient:
 
         async def post_cancel() -> None:
             try:
-                await self._transport.post_command(cancel_text(), readers)
+                await self._post_lane(cancel_text(), readers, oob=True)
             except Exception:  # noqa: BLE001
                 pass
 
@@ -585,14 +649,24 @@ class DeviceClient:
             watcher = asyncio.ensure_future(watch())
         try:
             try:
-                await self._transport.post_command(plaintext, readers)
-            except BaseException:
+                await self._post_lane(plaintext, readers)
+            except BaseException as e:
                 p = self._pending.pop(cmd_id, None)
                 if p is not None and p.handle is not None:
                     p.handle.cancel()
+                if isinstance(e, asyncio.CancelledError):
+                    self._spawn(post_cancel())  # the command may have landed: ask the device to drop or stop it
                 raise
             try:
                 return await future
+            except asyncio.CancelledError:
+                # The caller was cancelled (wait_for, a TaskGroup, task.cancel()): the computer must not keep
+                # working for nobody, and the pending entry must not wait for its timer.
+                p = self._pending.pop(cmd_id, None)
+                if p is not None and p.handle is not None:
+                    p.handle.cancel()
+                self._spawn(post_cancel())
+                raise
             except _CommandTimeout as e:
                 # Out-of-band and best effort: consumes no seq. A command that already started
                 # keeps its stored result on the device for a retry by id.
@@ -800,7 +874,7 @@ class DeviceClient:
         numbers. Raises ``DeviceProtocolError`` ``bad_args`` before sending when the arguments are
         out of range, ``unsupported`` when the computer cannot run tasks, ``out_of_scope`` without
         the grant or when the budget is spent. ``on_progress(Progress)`` gets each non-final line in
-        order (at most one every 2 s, newest wins); a callback that raises is ignored. Waits
+        order (at most one every 1 s, newest wins); a callback that raises is ignored. Waits
         ``timeout_s + 30`` s (default 180 + 30); on that timeout, or when ``abort`` (an
         ``asyncio.Event``) is set, it sends ``cancel`` with the task's id as ``re``. After an abort
         it waits up to 10 s for the device's ``stopped`` result and returns it, else raises.
@@ -828,8 +902,10 @@ class DeviceClient:
         readers = self._readers
         if readers is None:
             raise DeviceProtocolError("failed", "session active but lane readers unknown")
-        text = amend_command(say, session=meta.id, seq=self._seq, task_id=task_id)
-        await self._transport.post_command(text, readers)
+        text = amend_command(
+            say, session=meta.id, seq=self._seq, task_id=task_id, exp=self._clock_ms() + self._clock_offset_ms + self._command_ttl_ms
+        )
+        await self._post_lane(text, readers, oob=True)
 
     async def stop(self) -> None:
         """End the session (subtract-only). Safe to call more than once."""
@@ -1094,9 +1170,12 @@ class HttpDeviceTransport:
         for rid in readers.ids:
             member = by_id.get(str(rid).lower())
             key = member.get("public_key") if member else None
-            if not key:
-                raise DeviceProtocolError("failed", f"lane reader {rid} has no public key; not sending")
-            keys.append(key)
+            if key:
+                keys.append(key)
+            elif not readers.lenient:
+                raise LaneReaderError(f"lane reader {rid} has no public key; not sending")
+        if not keys:
+            raise LaneReaderError("no lane reader has a public key; not sending")
         return keys
 
     async def post_command(self, plaintext: str, readers: LaneReaders) -> None:

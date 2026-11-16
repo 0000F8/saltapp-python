@@ -202,7 +202,7 @@ local agent on the computer does it, checks it, and answers with a checked recei
   (`task_command(goal, done_when=None, max_steps=None, timeout_s=None, *, session, seq)`, which
   refuses what the device would refuse -- empty or over-long goal, a `done_when` over 500,
   non-whole numbers -- and clamps `max_steps` to 1..60 and `timeout_s` to 10..600),
-  `cancel_command(id, ..., task=True)`, `amend_command(say, *, session, seq, task_id=None)` / `parse_amend`, and `parse_progress` / `parse_task_result`, which allow-list
+  `cancel_command(id, ..., task=True)`, `amend_command(say, *, session, seq, task_id=None, exp=None)` / `parse_amend`, and `parse_progress` / `parse_task_result`, which allow-list
   what a device sends (summary <= 500, step lines <= 140, <= 60 steps, `checked.what` <= 200;
   an unknown `status` reads `failed`). Caps count characters, not bytes. The result is words and
   numbers only: command output and screenshots never leave the computer. Treat `summary` and step
@@ -265,7 +265,7 @@ async def main(agent: Agent, device_id: str) -> None:
   op `amend`: same `device.task` grant, no count class, no answer, out of band like `cancel` (it does not wait
   behind the running task and takes no seq; a paused session still takes it). The task takes the text up
   between steps and carries on with it; this is not a cancel and restart, and it does not extend `max_steps`
-  or `timeout_s`. `say` is cut to 500 characters. An unknown or finished task ignores it silently. It changes
+  or `timeout_s`. `say` is at most 500 characters (`amend_task` raises `bad_args` over that; the device clips what it receives by code points). The client puts the usual `exp` on it and the device REQUIRES it: a stale or far-future `exp`, a repeated message id (a replayed frame is applied once), one past the mandate's expiry, or more than 2 a second is dropped, and a task takes at most `AMEND_MAX_PER_TASK` (20) in total, the rest answered by a plain `Not applied: ...` progress line. Any task you started and have not seen finish can be amended, including one still waiting for the device lock; an unknown or finished task ignores it silently, and one that arrives as the task ends is reported with a `Not applied: the task finished ...` line. Cancelling the asyncio task that is awaiting `task()` (`asyncio.wait_for`, a `TaskGroup`, `task.cancel()`) now sends `cancel` for it and clears its pending entry. A send that fails on a stale or keyless lane reader (`LaneReaderError`) re-reads the session and retries once; `cancel` and `amend` skip a keyless reader (`LaneReaders.lenient`). It changes
   what the task does and nothing else: it never approves, grants or lifts a refusal, and the computer shows
   `Updated: <text>` as a progress line. Say it as the person said it. Grammar: `amend_command(say, *, session,
   seq, task_id=None)`, `parse_amend`, `AMEND_SAY_MAX`. Progress now arrives at most once a second
