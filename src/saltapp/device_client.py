@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Mapping, Optional, Protocol, Sequence, Union
 
@@ -71,6 +72,9 @@ TASK_ABORT_GRACE_S = 10.0
 #: ``open()`` gives up. The server ends an unanswered request after 2 minutes with
 #: ``request_expired``; this is a touch longer so the server's own end reaches us first.
 APPROVAL_TIMEOUT_S = 150.0
+#: How long ``open()`` waits while the request is ``queued`` behind another agent or undelivered (the
+#: computer asleep or offline): salt-api's ``UNDELIVERED_TTL``, 8 hours. The server expires it first.
+QUEUED_TIMEOUT_S = 8 * 60 * 60.0
 
 #: Per-command wait for a result, in seconds. On timeout the client sends ``cancel {id}``.
 COMMAND_TIMEOUT_S = 30.0
@@ -137,6 +141,7 @@ class DeviceSessionMeta:
 
 
 #: What ``on_state`` emits: ``{"state": "queued", "position": n}``, ``{"state": "requested"}``,
+#: ``{"state": "requested", "delivered": False}`` (the computer has not got it yet), ``{"state": "delivered"}``,
 #: ``{"state": "active"}``, ``{"state": "paused", "reason": r}``, ``{"state": "resumed"}`` or
 #: ``{"state": "ended", "reason": r}``.
 DeviceState = dict[str, Any]
@@ -245,6 +250,7 @@ class DeviceClient:
         device_id: str,
         *,
         approval_timeout_s: float = APPROVAL_TIMEOUT_S,
+        queued_timeout_s: float = QUEUED_TIMEOUT_S,
         command_timeout_s: float = COMMAND_TIMEOUT_S,
         command_ttl_ms: int = COMMAND_TTL_MS,
         clock_ms: Optional[Callable[[], int]] = None,
@@ -252,6 +258,7 @@ class DeviceClient:
         self._transport = transport
         self.device_id = device_id
         self._approval_timeout_s = approval_timeout_s
+        self._queued_timeout_s = queued_timeout_s
         self._command_timeout_s = command_timeout_s
         self._command_ttl_ms = command_ttl_ms
         self._clock_ms = clock_ms or (lambda: int(time.time() * 1000))
@@ -305,17 +312,58 @@ class DeviceClient:
         return fut
 
     def _start_approval_timer(self) -> None:
-        """The approval clock runs only while ``requested``, never while ``queued``."""
-        if self._open_future is None or self._open_timer is not None:
+        """The approval clock runs only once the device has the request, never while it is
+        ``queued`` or undelivered."""
+        self._start_open_timer(self._approval_timeout_s, "device did not approve in time", keep_running=False)
+
+    def _start_wait_timer(self, *, keep_running: bool = False) -> None:
+        """While queued or undelivered ``open()`` waits on its own, much longer clock."""
+        self._start_open_timer(self._queued_timeout_s, "computer did not pick up the request in time", keep_running=keep_running)
+
+    def _start_open_timer(self, seconds: float, message: str, *, keep_running: bool) -> None:
+        if self._open_future is None:
             return
+        if self._open_timer is not None:
+            if not keep_running:
+                self._clear_open_timer()
+            else:
+                return
 
         def expire() -> None:
             self._open_timer = None
             fut = self._take_open_future()
             if fut is not None and not fut.done():
-                fut.set_exception(DeviceProtocolError("failed", "device did not approve in time"))
+                fut.set_exception(DeviceProtocolError("failed", message))
 
-        self._open_timer = _call_later(asyncio.get_running_loop(), self._approval_timeout_s, expire)
+        self._open_timer = _call_later(asyncio.get_running_loop(), seconds, expire)
+
+    def _enter_requested(self) -> None:
+        """A request the device holds: the approval clock if it is delivered (or an older server never
+        says), otherwise the long wait. ``delivered_at: null`` is the server's word for "not yet"."""
+        extra = self._meta.extra if self._meta is not None else {}
+        if "delivered_at" in extra and extra["delivered_at"] is None:
+            self._emit_state({"state": "requested", "delivered": False})
+            self._start_wait_timer(keep_running=False)
+            return
+        self._emit_state({"state": "requested"})
+        self._start_approval_timer()
+
+    async def _wait_open(self, waiter: "asyncio.Future[DeviceSessionMeta]") -> DeviceSessionMeta:
+        """Await the open future. Cancelling the caller stops the wait and withdraws a request that is
+        still waiting (best effort), so it does not hold the computer for hours."""
+        try:
+            return await waiter
+        except asyncio.CancelledError:
+            sid = self._meta.id if self._meta is not None else None
+            waiting = self._meta is not None and self._meta.status not in ("active", "paused")
+            self._clear_open_timer()
+            self._open_future = None
+            if sid is not None and waiting:
+                try:
+                    await asyncio.shield(self._transport.stop_session(sid))
+                except Exception:  # noqa: BLE001
+                    pass
+            raise
 
     def _settle_open(self, meta: DeviceSessionMeta) -> None:
         self._clear_open_timer()
@@ -412,15 +460,15 @@ class DeviceClient:
         status = self._meta.status
         if status == "active":
             self._become_active(self._meta, True)
-            return await waiter if waiter else self._meta
+            return await self._wait_open(waiter) if waiter else self._meta
         if status == "queued":
             self._emit_state({"state": "queued", "position": self._meta.position or 1})
+            self._start_wait_timer()
         elif status == "requested":
-            self._emit_state({"state": "requested"})
-            self._start_approval_timer()
+            self._enter_requested()
         if waiter is None:
             return self._meta
-        return await waiter
+        return await self._wait_open(waiter)
 
     async def _reattach(self, session_id: str, waiter: Optional["asyncio.Future[DeviceSessionMeta]"]) -> DeviceSessionMeta:
         try:
@@ -438,7 +486,7 @@ class DeviceClient:
                 self._emit_state({"state": "paused", "reason": self._paused_reason})
             else:
                 self._become_active(session, True)
-            return await waiter if waiter else self._meta  # type: ignore[return-value]
+            return await self._wait_open(waiter) if waiter else self._meta  # type: ignore[return-value]
         except BaseException:
             self._clear_open_timer()
             self._open_future = None
@@ -817,8 +865,16 @@ class DeviceClient:
                 self._become_active(merged, True)
             else:
                 self._meta = replace(merged, status="requested")
-                self._emit_state({"state": "requested"})
-                self._start_approval_timer()
+                self._enter_requested()
+        elif ev == "received":
+            # The device has the request: the approval clock starts now, the long wait ends.
+            if self._meta is None or self._meta.status in ("active", "paused"):
+                return
+            raw = {**self._meta.to_dict(), **(sess or {}), "status": "requested"}
+            raw["delivered_at"] = b.get("delivered_at") or datetime.now(timezone.utc).isoformat()
+            self._meta = DeviceSessionMeta.from_dict(raw)
+            self._emit_state({"state": "delivered"})
+            self._start_approval_timer()
         elif ev == "queue_moved":
             if self._meta is None:
                 return
@@ -828,6 +884,7 @@ class DeviceClient:
                 return
             self._meta = replace(self._meta, status="queued", position=position)
             self._emit_state({"state": "queued", "position": position})
+            self._start_wait_timer(keep_running=True)
         elif ev == "paused":
             if self._meta is None:
                 return
