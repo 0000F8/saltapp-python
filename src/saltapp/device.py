@@ -62,7 +62,7 @@ MUTATING_OPS: tuple[str, ...] = ("click", "type", "key", "scroll", "submit", "fo
 #: Commands an agent sends to a device.
 AGENT_OPS: tuple[str, ...] = (
     "observe", "click", "type", "key", "scroll", "submit", "focus_app", "list_apps",
-    "settings", "read_file", "write_file", "task", "stop", "cancel", "shell",
+    "settings", "read_file", "write_file", "task", "stop", "cancel", "amend", "shell",
 )
 
 #: Results a device sends back. ``progress`` is NON-final (same ``re`` as its task);
@@ -92,6 +92,7 @@ CAPABILITY_FOR_OP: dict[str, Optional[str]] = {
     "task": "device.task",
     "stop": None,
     "cancel": None,
+    "amend": "device.task",  # the same grant that started the task; out of band like cancel, no count class
     "shell": "device.shell",  # reserved: the server refuses it and a host answers `forbidden`
 }
 
@@ -118,7 +119,9 @@ TASK_RESULT_STEPS_MAX = 60
 TASK_CHECKED_WHAT_MAX = 200
 TASK_ID_MAX = 64
 #: The device sends ``progress`` at most this often.
-PROGRESS_MIN_INTERVAL_MS = 2_000
+PROGRESS_MIN_INTERVAL_MS = 1_000
+#: An ``amend``'s ``say`` is cut to this many characters.
+AMEND_SAY_MAX = 500
 #: A task's command deadline on the device is ``timeout_s`` + this, not COMMAND_TTL_MS.
 TASK_DEVICE_GRACE_MS = 15_000
 #: The agent waits ``timeout_s`` + this for the result before it sends ``cancel``.
@@ -455,6 +458,66 @@ def cancel_command(
         re=command_id if task else None,
     )
     return encode_device_message(header, {"id": command_id})
+
+
+@dataclass(frozen=True)
+class AmendArgs:
+    """The body of an ``amend``: the new or changed instruction for a task already running."""
+
+    say: str
+    id: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        if self.id is not None:
+            out["id"] = self.id
+        out["say"] = self.say
+        return out
+
+
+def parse_amend(body: Any) -> Optional[AmendArgs]:
+    """An ``amend`` body allow-listed with the cap applied (``say`` cut to 500 characters);
+    ``None`` when it is not one (no non-blank ``say``, or an ``id`` that is not a string of
+    1..64 characters). Only ``id`` and ``say`` get through."""
+    if not isinstance(body, Mapping):
+        return None
+    say = body.get("say")
+    if not isinstance(say, str) or not say.strip():
+        return None
+    raw_id = body.get("id")
+    task_id: Optional[str] = None
+    if raw_id is not None:
+        if not isinstance(raw_id, str) or not raw_id or len(raw_id) > TASK_ID_MAX:
+            return None
+        task_id = raw_id
+    return AmendArgs(say=_clip(say, AMEND_SAY_MAX), id=task_id)
+
+
+def amend_command(
+    say: str,
+    *,
+    session: str,
+    seq: int,
+    task_id: Optional[str] = None,
+    id: Optional[str] = None,
+) -> str:
+    """The plaintext of an ``amend``: changes a task that is already running (grant ``device.task``).
+    ``task_id`` is the task command's id (also put in the header's ``re``); leave it ``None`` when
+    exactly one task is running. Out of band like ``cancel``: it consumes no sequence number, so
+    pass the newest ``seq`` used so far (at least 1); the device does not answer it. ``say`` is cut
+    to 500 characters. Raises ``DeviceProtocolError("bad_args")`` for an empty ``say`` or a bad id."""
+    args = parse_amend({"say": say, **({"id": task_id} if task_id is not None else {})})
+    if args is None:
+        raise DeviceProtocolError("bad_args", "amend needs a non-empty say and an id of at most 64 characters")
+    header = DeviceHeader(
+        v=DEVICE_PROTOCOL_VERSION,
+        id=id or device_message_id(),
+        seq=max(seq, 1),
+        op="amend",
+        session=session,
+        re=task_id,
+    )
+    return encode_device_message(header, args.to_dict())
 
 
 @dataclass(frozen=True)

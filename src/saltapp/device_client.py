@@ -53,6 +53,7 @@ from saltapp.device import (
     Progress,
     StillBody,
     TaskResult,
+    amend_command,
     decode_device_message,
     device_message_id,
     encode_device_message,
@@ -176,6 +177,10 @@ class DeviceClientTransport(Protocol):
 
     async def stop_session(self, session_id: str) -> None:
         """``POST /api/v1/device_sessions/:sid/stop`` (subtract-only, idempotent)."""
+
+    # Also optional: ``async def withdraw_session(self, session_id)`` is ``DELETE
+    # /api/v1/device_sessions/:sid``, the documented way to withdraw a request that is still waiting;
+    # ``open()`` uses it when cancelled before delivery and falls back to ``stop_session``.
 
     async def post_command(self, plaintext: str, readers: LaneReaders) -> None:
         """Encrypt ``plaintext`` for the current lane readers and POST it as one lane message. The
@@ -360,7 +365,8 @@ class DeviceClient:
             self._open_future = None
             if sid is not None and waiting:
                 try:
-                    await asyncio.shield(self._transport.stop_session(sid))
+                    withdraw = getattr(self._transport, "withdraw_session", None) or self._transport.stop_session
+                    await asyncio.shield(withdraw(sid))
                 except Exception:  # noqa: BLE001
                     pass
             raise
@@ -606,11 +612,14 @@ class DeviceClient:
         timeout_s: Optional[float] = None,
         on_progress: Optional[Callable[[Progress], Any]] = None,
         abort: Optional[asyncio.Event] = None,
+        on_start: Optional[Callable[[str], Any]] = None,
     ) -> tuple[str, Any]:
         if abort is not None and abort.is_set():
             raise DeviceProtocolError("failed", "task aborted")
         meta, readers = self._require_active()
         cmd_id = device_message_id()  # reused by every resend of this command
+        if on_start is not None:
+            _safely(on_start, cmd_id)
         self._seq += 1
         resynced = refreshed = skewed = False
         while True:
@@ -782,6 +791,7 @@ class DeviceClient:
         timeout_s: Optional[int] = None,
         on_progress: Optional[Callable[[Progress], Any]] = None,
         abort: Optional[asyncio.Event] = None,
+        on_start: Optional[Callable[[str], Any]] = None,
     ) -> TaskResult:
         """Hand the computer ONE whole task (op ``task``, grant ``device.task``) and wait for its
         checked result. ``goal`` is what the person asked for, in plain words (1..2000 characters);
@@ -793,12 +803,33 @@ class DeviceClient:
         order (at most one every 2 s, newest wins); a callback that raises is ignored. Waits
         ``timeout_s + 30`` s (default 180 + 30); on that timeout, or when ``abort`` (an
         ``asyncio.Event``) is set, it sends ``cancel`` with the task's id as ``re``. After an abort
-        it waits up to 10 s for the device's ``stopped`` result and returns it, else raises."""
+        it waits up to 10 s for the device's ``stopped`` result and returns it, else raises.
+        ``on_start(task_id)`` is called with the task's command id before it is sent: the id
+        ``amend_task`` takes."""
         # Refuses here what the device would refuse, before anything is sent.
         args = task_command_body(goal, done_when, max_steps, timeout_s)
         wait_s = args.get("timeout_s", TASK_TIMEOUT_S_DEFAULT) + TASK_CLIENT_GRACE_MS / 1000
-        body = await self._expect("task", "task_result", args, timeout_s=wait_s, on_progress=on_progress, abort=abort)
+        body = await self._expect("task", "task_result", args, timeout_s=wait_s, on_progress=on_progress, abort=abort, on_start=on_start)
         return parse_task_result(body)
+
+    async def amend_task(self, task_id: Optional[str], say: str) -> None:
+        """Change a task that is already running (op ``amend``, same grant as ``task``). ``say`` is
+        the new or changed instruction in plain words (cut to 500 characters); the task takes it up
+        between steps and carries on with it, which is not a cancel and restart. ``task_id`` is the id
+        ``task(on_start=...)`` gave; pass ``None`` when exactly one task is running. Out of band like
+        a cancel: it does not wait behind the running task, takes no seq and the device does not
+        answer, so an unknown or finished task ignores it silently. It changes what the task does and
+        nothing else: it never approves, grants or lifts a refusal. A paused session still takes it.
+        Raises ``DeviceProtocolError`` ``bad_args`` for an empty ``say`` and ``failed`` with no live
+        session. Returns once it is posted."""
+        meta = self._meta
+        if meta is None or meta.status not in ("active", "paused"):
+            raise DeviceProtocolError("failed", "no active device session")
+        readers = self._readers
+        if readers is None:
+            raise DeviceProtocolError("failed", "session active but lane readers unknown")
+        text = amend_command(say, session=meta.id, seq=self._seq, task_id=task_id)
+        await self._transport.post_command(text, readers)
 
     async def stop(self) -> None:
         """End the session (subtract-only). Safe to call more than once."""
@@ -1049,6 +1080,10 @@ class HttpDeviceTransport:
 
     async def stop_session(self, session_id: str) -> None:
         await self._client._request("POST", f"/api/v1/device_sessions/{session_id}/stop", self._api_key)
+
+    async def withdraw_session(self, session_id: str) -> None:
+        # A request still waiting is withdrawn with DELETE; `stop` is for a session that is working.
+        await self._client._request("DELETE", f"/api/v1/device_sessions/{session_id}", self._api_key)
 
     async def _keys_for(self, readers: LaneReaders) -> list[str]:
         if readers.public_keys:

@@ -202,7 +202,7 @@ local agent on the computer does it, checks it, and answers with a checked recei
   (`task_command(goal, done_when=None, max_steps=None, timeout_s=None, *, session, seq)`, which
   refuses what the device would refuse -- empty or over-long goal, a `done_when` over 500,
   non-whole numbers -- and clamps `max_steps` to 1..60 and `timeout_s` to 10..600),
-  `cancel_command(id, ..., task=True)`, and `parse_progress` / `parse_task_result`, which allow-list
+  `cancel_command(id, ..., task=True)`, `amend_command(say, *, session, seq, task_id=None)` / `parse_amend`, and `parse_progress` / `parse_task_result`, which allow-list
   what a device sends (summary <= 500, step lines <= 140, <= 60 steps, `checked.what` <= 200;
   an unknown `status` reads `failed`). Caps count characters, not bytes. The result is words and
   numbers only: command output and screenshots never leave the computer. Treat `summary` and step
@@ -260,6 +260,16 @@ async def main(agent: Agent, device_id: str) -> None:
 (Run the agent's socket or webhook loop beside `main`, e.g. `asyncio.gather(agent.run_socket(), main(...))`;
 `agent` is an `Agent` with its identity set. The two handlers are the whole wiring.)
 
+- **Change a running task (`amend`).** `await device.amend_task(task_id, "also close the tab when done")`
+  (`task_id` from `device.task(..., on_start=lambda id: ...)`, or `None` when exactly one task is running) sends
+  op `amend`: same `device.task` grant, no count class, no answer, out of band like `cancel` (it does not wait
+  behind the running task and takes no seq; a paused session still takes it). The task takes the text up
+  between steps and carries on with it; this is not a cancel and restart, and it does not extend `max_steps`
+  or `timeout_s`. `say` is cut to 500 characters. An unknown or finished task ignores it silently. It changes
+  what the task does and nothing else: it never approves, grants or lifts a refusal, and the computer shows
+  `Updated: <text>` as a progress line. Say it as the person said it. Grammar: `amend_command(say, *, session,
+  seq, task_id=None)`, `parse_amend`, `AMEND_SAY_MAX`. Progress now arrives at most once a second
+  (`PROGRESS_MIN_INTERVAL_MS`).
 - **Feeds.** `handle_delivery(type, body)` takes the `device_session_*` deliveries (`Agent.on_device_delivery`);
   `handle_lane_message(plaintext, sender_id)` takes a decrypted lane message with the sender's account id and
   returns True when it consumed a device result. Only the computer's own account counts (a person, another
