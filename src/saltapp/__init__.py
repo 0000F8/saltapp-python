@@ -18,6 +18,8 @@ from saltapp._version import __version__
 
 from saltapp.agent import Agent, AskResult, AskTimeout
 from saltapp.chat_privacy import is_private_chat
+from saltapp.device import DeviceProtocolError
+from saltapp.device_client import DeviceClient, DevicePausedError, DeviceSessionLiveError, HttpDeviceTransport
 from saltapp.errors import ApproveFirstError, GoalPlanError, PlanRequiredError, RecipientContactsOnlyError, SaltApiError, SaltAppError, StaleRulesError, RULE_ERROR_CODES
 from saltapp.identity import Identity
 from saltapp.register import RegisteredAgent, register_agent, register_agent_async
@@ -29,6 +31,11 @@ __all__ = [
     "AskResult",
     "ApproveFirstError",
     "AskTimeout",
+    "DeviceClient",
+    "DevicePausedError",
+    "DeviceProtocolError",
+    "DeviceSessionLiveError",
+    "HttpDeviceTransport",
     "FileSeenStore",
     "GoalPlanError",
     "Identity",

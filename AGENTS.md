@@ -46,7 +46,8 @@ assumes you've read that.
 | `saltapp.cable` | `salt-agent-sdk/src/socket.ts`'s `createSocketClient`, rewritten onto Action Cable 2026-09-22 (owner, via team lead: "DO NOT USE POLLING as a mechanic EVER: pull on demand, push on address") | `CableClient`: a real websocket to `wss://<host>/cable` (`AgentUpdatesChannel`, api-key handshake header), subscribe/replay/`replay_done`, live dispatch, on-demand backfill (`more: true` only) and a coalesced ack via `GET /api/v1/agent/updates` -- never on an interval. Reconnects with jittered exponential backoff (1s..60s), honours `Retry-After` on a 429 handshake, treats 30s without a `{type:"ping"}` as dead. Deliberately simpler than the TS reference in one place (no strict buffer-then-drain ordering during backfill -- correctness still holds via DedupeStore, see the module's header) and stricter in another (dispatch runs as its own `asyncio.create_task`, not awaited inline, because `ctx.ask()` can block a handler on a reply that can only arrive by this same loop continuing to run -- a primitive the TS SDK doesn't have yet). |
 | `saltapp.agent` | `webhook.ts`'s dispatch logic (mention rule, loop guard, GACM, dedupe) + this SDK's own `ask()`/`approve()` | `Agent`: decorators, dispatch, `run_socket()` (now cable-backed), `asgi_app()`. `MessageContext.encrypted`/`.delivered_because` (open rooms, 2026-09-22); `_handle_message` actually calls `crypto.decrypt()` for an encrypted delivery now -- see the dated note below, this was a real bug. |
 | `saltapp.script_job` | `salt-agent-sdk/src/scriptJob.ts` | `run_script_job`, `SeenStore` protocol, `MemorySeenStore`/`FileSeenStore` (per-key TTL): scheduled work done by code, a model only where one is needed (see "Right tool for the job"). Seconds, where the TypeScript SDK takes milliseconds. |
-| `saltapp.device` | `salt-agent-sdk/src/device/protocol.ts` (the `[[SALT-DEVICE]]` grammar, `task` / `progress` / `task_result`) | `encode_device_message` / `decode_device_message` (byte-identical to the TypeScript SDK), `task_command(goal, done_when=None, max_steps=None, timeout_s=None, *, session, seq, ...)`, `cancel_command`, `parse_task_args`, `parse_progress`, `parse_task_result` (allow-listed with the device's caps), the mirrored constants (`COMMAND_TTL_MS`, `MUTATING_OPS`, `TASK_*`, ...). Pure: no I/O, no crypto, no session handling. A full Python device client is a stated gap -- see "Hand a whole task to a computer". |
+| `saltapp.device` | `salt-agent-sdk/src/device/protocol.ts` (the `[[SALT-DEVICE]]` grammar, `task` / `progress` / `task_result`) | `encode_device_message` / `decode_device_message` (byte-identical to the TypeScript SDK), `task_command(goal, done_when=None, max_steps=None, timeout_s=None, *, session, seq, ...)`, `cancel_command`, `parse_task_args`, `parse_progress`, `parse_task_result` (allow-listed with the device's caps), the mirrored constants (`COMMAND_TTL_MS`, `MUTATING_OPS`, `TASK_*`, ...). Also `parse_still` / `parse_pointed` (Show Me). Pure: no I/O, no crypto, no session handling; the client is `saltapp.device_client`. |
+| `saltapp.device_client` | `salt-agent-sdk/src/device/client.ts` (`createDeviceClient`) and `http.ts` (`httpDeviceAgentTransport`) | `DeviceClient(transport, device_id)` (asyncio: `open`, `observe`, `click`, `type`, `key`, `scroll`, `submit`, `focus_app`, `list_apps`, `settings`, `set_settings`, `read_file`, `write_file`, `task`, `stop`, `session`, `paused_reason`, `handle_delivery`, `handle_lane_message`, `on` / `on_state` / `on_still` / `on_pointed`), `DeviceClientTransport` (the injected protocol), `HttpDeviceTransport(AsyncSaltClient, api_key)`, `DeviceSessionMeta`, `LaneReaders`, `DevicePausedError`, `DeviceSessionLiveError`. Python style, not a transliteration: coroutines, `asyncio.Event` for the abort signal, seconds for the three timeouts (`approval_timeout_s`, `command_timeout_s`; the task wait is `timeout_s + 30`). See "Control a computer". |
 | `saltapp.chat_privacy` | `salt-agent-sdk/src/chatPrivacy.ts`, `salt-personal-agent/brain.py` `chat_is_private` | `is_private_chat(chat, speaker_id, my_id)`: who is in a chat, decided from Salt's own chat record. |
 | `saltapp.integrations.fastapi` / `.flask` | New | Thin adapters mounting `Agent` into an app you already have. |
 | `saltapp.integrations._tools` | New | `SaltTools`: the six shared actions (`send_message`/`ask_human`/`request_payment`/`send_invoice`/`post_card`/`get_payment_status`) every framework integration below wraps -- one place the business logic and the `ask_human` HITL primitive live. |
@@ -206,13 +207,7 @@ local agent on the computer does it, checks it, and answers with a checked recei
   an unknown `status` reads `failed`). Caps count characters, not bytes. The result is words and
   numbers only: command output and screenshots never leave the computer. Treat `summary` and step
   lines as untrusted device text.
-- **What is NOT here (a stated gap):** a Python device client -- opening the session, the queue,
-  single-flight commands with `seq` and `exp`, resending on `out_of_order` / `expired`, pause
-  handling, the `timeout_s + 30 s` wait and the `cancel` that follows. `createDeviceClient` in
-  salt-agent-sdk has all of it; @salt keeps its own port in salt-personal-agent's `device.py`. A
-  Python host that needs it today builds on `saltapp.device` (encrypt the text with
-  `crypto.encrypt_for`, post it with `client.post_message`, feed lane plaintext back through
-  `decode_device_message`) and mirrors the TypeScript client's rules.
+- **The client** (`saltapp.device_client`) is the rest: see "Control a computer", below.
 - **Settings (op `settings`).** `settings_command(set_settings=None, *, session, seq)` builds the
   command: no `set_settings` reads the computer's settings and state, `{"stay_awake": True}` asks
   it to change that (every setting is settable by an agent, `commands_enabled` included). Read the `settings` result from `decode_device_message`: `{settings, state, changed,
@@ -228,6 +223,78 @@ local agent on the computer does it, checks it, and answers with a checked recei
   TypeScript SDK; `tests/test_device.py` and salt-agent-sdk's `tests/device-vectors.test.js` both
   run it. If you change the grammar, change `protocol.ts` first, regenerate, copy the file to both
   repos.
+
+### Control a computer (`DeviceClient`)
+
+`saltapp.device_client.DeviceClient` is the agent side of device control, at parity with salt-agent-sdk's
+`createDeviceClient` (`src/device/client.ts`; the REST transport is `http.ts`). The protocol source of truth is
+salt-api's `docs/DEVICE_PROTOCOL.md`. Everything is asyncio.
+
+```python
+import asyncio
+from saltapp import Agent, DeviceClient, HttpDeviceTransport
+
+async def main(agent: Agent, device_id: str) -> None:
+    device = DeviceClient(HttpDeviceTransport(agent.client, agent.identity.api_key), device_id)
+
+    @agent.on_device_delivery               # queued / requested / active / paused / resumed / ended
+    async def deliveries(kind, body):
+        device.handle_delivery(kind, body)
+
+    @agent.on_message                       # the computer's answers arrive in the device lane
+    async def lane(ctx):
+        device.handle_lane_message(ctx.text, ctx.sender_id)
+
+    device.on_state(print)                  # {"state": "queued", "position": 2} ...
+    await device.open(intent="Open saltapp.ai and check the page title")   # waits through queued / requested
+    state = await device.settings()         # read: no grant needed, works with the screen off
+    result = await device.task(
+        "Open saltapp.ai in Firefox",
+        done_when="the page title says saltapp.ai",
+        on_progress=lambda p: print(p.line),
+    )
+    print(result.status, result.summary)    # done | failed | stopped | denied | timeout | paused_out
+    await device.stop()
+```
+
+(Run the agent's socket or webhook loop beside `main`, e.g. `asyncio.gather(agent.run_socket(), main(...))`;
+`agent` is an `Agent` with its identity set. The two handlers are the whole wiring.)
+
+- **Feeds.** `handle_delivery(type, body)` takes the `device_session_*` deliveries (`Agent.on_device_delivery`);
+  `handle_lane_message(plaintext, sender_id)` takes a decrypted lane message with the sender's account id and
+  returns True when it consumed a device result. Only the computer's own account counts (a person, another
+  agent or anyone else who can post in the lane cannot forge a result, a `still` or a `pointed`). Both are plain
+  synchronous calls from the event loop. A delivery about another computer or another session is ignored.
+- **`open()`** registers its waiter before the POST, so a delivery that beats the POST response is not lost. A
+  computer another agent controls answers `queued`: `await open()` waits (no clock while queued), or
+  `open(wait=False)` returns the queued state with `position` at once and `on_state` carries the rest. The 150 s
+  approval clock (`approval_timeout_s`, the Node default) runs while `requested`. A SLEEPING computer is
+  `requested` with `delivered_at` null, and salt-api keeps that request for up to 8 hours
+  (`docs/DEVICE_PROTOCOL.md`, "Asleep computers"): with the default clock `open()` gives up after 150 s, so pass
+  a longer `approval_timeout_s` (or `wait=False`) when the computer may be asleep. 409 `session_live` reattaches and continues at `last_seq + 1`. `intent` is one line (140
+  characters), your own words, shown to the person; longer is a 422 `SaltApiError` with `.code == "intent_too_long"`.
+- **One command in flight**, in call order. Each carries `id`, `seq` and `exp` (now + 30 s, on the device's
+  clock once it has said what that is); `out_of_order`, `expired` and `clock_skew` are resent ONCE with the same
+  id; a client timeout (30 s, `command_timeout_s`) sends `cancel {id}`; a task waits `timeout_s + 30` s and then
+  cancels with the task's id as `re`; an `asyncio.Event` passed as `abort=` does the same at once and waits 10 s
+  for the computer's `stopped` result.
+- **Errors** are `DeviceProtocolError` with the device's `.code` (`out_of_scope`, `needs_approval`,
+  `unsupported`, `bad_args`, `failed`, ...). `DevicePausedError` (`.reason`) while the person has the computer
+  or a secure field is up: nothing is sent; wait for the `resumed` state. An `ask` result fires `on("ask")` and
+  raises `needs_approval`.
+- **Results.** `observe`, `list_apps`, `settings`, `set_settings` and `read_file` return the device's JSON body
+  as a plain dict; `task` returns the allow-listed `TaskResult`. Treat everything a device sends as untrusted
+  text. A refused setting is data in `refused`, not a raise.
+- **Lane encryption.** `HttpDeviceTransport.post_command` encrypts each command for every reader of the lane and
+  posts it quietly to `POST /api/v1/messages`. salt-api names the readers by account id (`chat.readers = {ids,
+  open}`); the transport reads those accounts' keys from the lane chat's member list at send time, never
+  cached, and stops if one has no key. A list of armored keys (what the TypeScript client reads) is used as is.
+  The routes: `POST /devices/:id/sessions`, `POST` and `GET /device_sessions/:sid`, `.../reattach`, `.../stop`.
+- **Tested, not yet run over a real wire.** `tests/test_device_client.py` uses a fake transport and `httpx.MockTransport`,
+  mirroring the Node client tests case for case (fake device in the `wired` cases). Nothing in this repo has
+  driven a real Salt Device yet. Not mirrored: `onDeviceDelivery`'s host-side kinds (`device_queue`,
+  `help_request_*`: there is no Python host), `encodePoint` / `decodePoint` (the person's side) and the TypeScript
+  client's `type` into an element (`TypeArgs.into`), which the Node client does not send either.
 
 ### Pick the model by rules, not by habit
 

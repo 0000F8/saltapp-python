@@ -34,7 +34,7 @@ DELIVERY_ID_HEADER = "X-Salt-Delivery-Id"
 
 DEFAULT_TOLERANCE_SECONDS = 300
 
-EventType = str  # "message" | "card_interaction" | "invoice_paid" | "chat_opened" | "member_key_changed" | "handoff_confirmed" | "handoff_received" | "mandate_offered" | "mandate_activated" | "mandate_paused" | "mandate_revoked" | "strategy_tuned" | "strategy_tune_declined" | "approval_requested" | "approval_decided" | "device_session_ended" | "device_back" | "unknown"
+EventType = str  # "message" | "card_interaction" | "invoice_paid" | "chat_opened" | "member_key_changed" | "handoff_confirmed" | "handoff_received" | "mandate_offered" | "mandate_activated" | "mandate_paused" | "mandate_revoked" | "strategy_tuned" | "strategy_tune_declined" | "approval_requested" | "approval_decided" | "device_session_ended" | "device_back" | "device_session" | "unknown"
 
 # Mandates R2 (salt-api's MandateEventJob): same rail as card_interaction/
 # invoice_paid -- a per-recipient plaintext delivery, always carrying an
@@ -155,6 +155,10 @@ def classify(body: dict[str, Any]) -> EventType:
         return explicit
     if explicit in _DEVICE_EVENT_TYPES:
         return explicit
+    # The rest of a controlled session's life (active, promoted, queue_moved, paused, resumed, ...): fed
+    # to a DeviceClient through Agent.on_device_delivery. `device_session_ended` stays its own type above.
+    if isinstance(explicit, str) and explicit.startswith("device_session"):
+        return "device_session"
     if isinstance(body.get("message"), dict):
         return "message"
     # Shape-sniff, for a body that omits `type` but still matches one shape.

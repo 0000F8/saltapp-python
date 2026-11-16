@@ -8,13 +8,8 @@ transport. It mirrors salt-agent-sdk's ``src/device/protocol.ts`` byte for byte
 here, never the other way round); ``tests/fixtures/device_envelope_vectors.json``
 is committed identically in both repos and both test suites hold themselves to it.
 
-THIS IS NOT A DEVICE CLIENT. A full Python device client (open a session, queue,
-reattach, single-flight, send/await over the lane) is a stated gap: the TypeScript
-SDK has ``createDeviceClient`` / ``createDeviceHost``, and @salt keeps its own
-port in salt-personal-agent's ``device.py``. What a Python host needs to talk to a
-computer, build a ``task`` command and read ``progress`` / ``task_result`` back, is
-here; encrypt it for the lane readers with ``saltapp.crypto.encrypt_for``, post it
-with ``client.post_message`` and feed what comes back through ``decode_device_message``.
+This module is the grammar only. The device CLIENT (open a session, queue, reattach,
+single-flight, send and await over the lane) is ``saltapp.device_client``, which builds on it.
 
 Hand a whole task to a computer::
 
@@ -623,4 +618,141 @@ def parse_task_result(
         steps=tuple(steps),
         commands=commands if commands is not None and commands >= 0 else 0,
         duration_ms=duration if duration is not None and duration >= 0 else (duration_ms or 0),
+    )
+
+
+# --- Show Me: stills and pointed (op `still`, op `pointed`) -------------------
+
+#: Device-to-agent ops that are not answers to a command. Kept out of ``DEVICE_RESULT_OPS``
+#: on purpose: that list is pinned by the envelope-vector fixture shared with salt-agent-sdk.
+DEVICE_UNSOLICITED_OPS: tuple[str, ...] = ("still", "pointed")
+
+#: The device posts at most one still every 2 s, and at most 30 a minute per lane.
+STILL_MIN_INTERVAL_MS = 2_000
+STILL_MAX_PER_MINUTE = 30
+#: A person's optional words on a point; ``pointed.words`` is the same cap.
+POINT_WORDS_MAX = 200
+#: Longest id a ``SALT-POINT`` header field may carry (help id, obs id, point id).
+POINT_ID_MAX = 64
+POINTED_NAME_MAX = 200
+
+POINTED_REFUSALS: tuple[str, ...] = ("forbidden_app", "secure_field", "stale", "not_allowed")
+
+
+@dataclass(frozen=True)
+class StillBody:
+    """A downscaled picture the computer posted while a help request is open."""
+
+    help_id: str
+    #: The observation id of this picture; a person's point names it back.
+    obs: str
+    width: int
+    height: int
+    scale: float
+    format: str
+    image_b64: str
+    #: ISO8601, or "" when the device sent none.
+    taken_at: str
+
+
+def _finite(x: Any) -> Optional[float]:
+    if isinstance(x, bool) or not isinstance(x, (int, float)):
+        return None
+    return float(x) if math.isfinite(x) else None
+
+
+def parse_still(raw: Any) -> Optional[StillBody]:
+    """A ``still`` body, allow-listed with types checked; ``None`` when it is not one. Extra
+    fields are dropped."""
+    if not isinstance(raw, Mapping):
+        return None
+    help_id, obs, fmt, image = raw.get("help_id"), raw.get("obs"), raw.get("format"), raw.get("image_b64")
+    if not isinstance(help_id, str) or not help_id or not isinstance(obs, str) or not obs:
+        return None
+    if fmt not in ("jpeg", "png"):
+        return None
+    if not isinstance(image, str) or not image:
+        return None
+    w, h = _whole(raw.get("width")), _whole(raw.get("height"))
+    if w is None or h is None or w < 1 or h < 1:
+        return None
+    scale = _finite(raw.get("scale"))
+    if scale is None or scale <= 0:
+        return None
+    taken = raw.get("taken_at")
+    return StillBody(
+        help_id=help_id, obs=obs, width=w, height=h, scale=scale, format=fmt, image_b64=image,
+        taken_at=taken if isinstance(taken, str) else "",
+    )
+
+
+@dataclass(frozen=True)
+class PointedElement:
+    role: str
+    subrole: Optional[str]
+    name: Optional[str]
+    value: Optional[str]
+    #: ``{"x", "y", "w", "h"}``.
+    bounds: Mapping[str, float]
+
+
+@dataclass(frozen=True)
+class PointedBody:
+    """The computer's answer to a person's point: what is under the spot they tapped."""
+
+    help_id: str
+    x: float
+    y: float
+    #: The spot in screen coordinates, ``{"x", "y"}``.
+    screen: Mapping[str, float]
+    app: Optional[str]
+    #: ``None`` when nothing is named under the point, or when the answer was refused.
+    element: Optional[PointedElement]
+    #: One of ``POINTED_REFUSALS``, or ``None``.
+    refused: Optional[str]
+    words: str
+
+
+def parse_pointed(raw: Any) -> Optional[PointedBody]:
+    """A ``pointed`` body, allow-listed field by field; ``None`` when it is not one. A refused
+    answer never carries an element, whatever the sender put there."""
+    if not isinstance(raw, Mapping):
+        return None
+    help_id = raw.get("help_id")
+    if not isinstance(help_id, str) or not help_id:
+        return None
+    x, y = _finite(raw.get("x")), _finite(raw.get("y"))
+    if x is None or y is None or x < 0 or x > 1 or y < 0 or y > 1:
+        return None
+    screen = raw.get("screen")
+    sx = _finite(screen.get("x")) if isinstance(screen, Mapping) else None
+    sy = _finite(screen.get("y")) if isinstance(screen, Mapping) else None
+    if sx is None or sy is None:
+        return None
+    refused = raw.get("refused") if raw.get("refused") in POINTED_REFUSALS else None
+    element: Optional[PointedElement] = None
+    raw_el = raw.get("element")
+    if refused is None and isinstance(raw_el, Mapping) and isinstance(raw_el.get("role"), str):
+        b = raw_el.get("bounds")
+        b = b if isinstance(b, Mapping) else {}
+
+        def text(key: str) -> Optional[str]:
+            v = raw_el.get(key)
+            return _clip(v, POINTED_NAME_MAX) if isinstance(v, str) else None
+
+        sub = raw_el.get("subrole")
+        element = PointedElement(
+            role=_clip(raw_el["role"], 80),
+            subrole=_clip(sub, 80) if isinstance(sub, str) else None,
+            name=text("name"),
+            value=text("value"),
+            bounds={k: _finite(b.get(k)) or 0 for k in ("x", "y", "w", "h")},
+        )
+    app = raw.get("app")
+    words = raw.get("words")
+    return PointedBody(
+        help_id=help_id, x=x, y=y, screen={"x": sx, "y": sy},
+        app=_clip(app, 200) if isinstance(app, str) else None,
+        element=element, refused=refused,
+        words=_clip(words, POINT_WORDS_MAX) if isinstance(words, str) else "",
     )

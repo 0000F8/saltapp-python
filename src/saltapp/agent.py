@@ -919,6 +919,15 @@ class Agent:
         self._handlers["device_session_ended"] = fn
         return fn
 
+    def on_device_delivery(self, fn: Handler) -> Handler:
+        """The life of a device session this agent controls, as Salt delivers it: `device_session_active`,
+        `_promoted`, `_queue_moved`, `_paused`, `_resumed` and `_ended`. `fn` is an async
+        `fn(type, body)`; hand both to `DeviceClient.handle_delivery(type, body)`. `device_session_ended`
+        also reaches `on_device_session_ended`. Lane messages from the computer arrive through
+        `on_message` (`ctx.text`, `ctx.sender_id`): hand them to `DeviceClient.handle_lane_message`."""
+        self._handlers["device_delivery"] = fn
+        return fn
+
     def on_device_back(self, fn: Handler) -> Handler:
         """The computer that stopped answering mid-session is back; sent once
         per lost session. `ctx`: `DeviceBackContext` (`.reply(text)` into the
@@ -997,8 +1006,11 @@ class Agent:
                 await self._handle_approval_requested(event.body)
             elif event.type == "approval_decided":
                 await self._handle_approval_decided(event.body)
+            elif event.type == "device_session":
+                await self._handle_device_delivery(event.body)
             elif event.type == "device_session_ended":
                 await self._handle_device_session_ended(event.body)
+                await self._handle_device_delivery(event.body)
             elif event.type == "device_back":
                 await self._handle_device_back(event.body)
         except Exception as exc:  # noqa: BLE001
@@ -1183,6 +1195,11 @@ class Agent:
         if handler is None:
             return
         await handler(MandateLifecycleContext(self, mandate))
+
+    async def _handle_device_delivery(self, body: dict[str, Any]) -> None:
+        handler = self._handlers.get("device_delivery")
+        if handler is not None:
+            await handler(str(body.get("type")), body)
 
     async def _handle_device_session_ended(self, body: dict[str, Any]) -> None:
         handler = self._handlers.get("device_session_ended")
