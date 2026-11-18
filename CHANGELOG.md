@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.23.0 — 2026-11-18
+
+- **Device op `apps_access`: which apps the computer lets agents control** (twin of salt-agent-sdk 0.39.0). `DeviceClient.apps_access()` sends a read-only `apps_access` `{}` under the `device.apps` grant and returns the device's list: each app's state (can control, needs the person, never allowed), when it was last checked and which agents used it. `AGENT_OPS`, `DEVICE_RESULT_OPS` and `CAPABILITY_FOR_OP` gain it; a device without the list answers `unsupported`. The shared envelope fixture is the same file as the TypeScript SDK's.
+
 ## 0.22.0 — 2026-11-16
 
 - **Device op `amend`: change a task that is already running** (twin of salt-agent-sdk 0.36.0). `DeviceClient.amend_task(task_id, say)` sends `amend` `{id?, say}`: out of band like `cancel` (no seq, no answer, no count class, same `device.task` grant, a paused session still takes it), `say` cut to 500 (`AMEND_SAY_MAX`). `task(..., on_start=fn)` gives `fn(task_id)` before the command is sent. Grammar in `saltapp.device`: `amend_command`, `parse_amend`, `AmendArgs`; `AGENT_OPS` and `CAPABILITY_FOR_OP` gain `amend`; `PROGRESS_MIN_INTERVAL_MS` 2000 -> 1000. `HttpDeviceTransport.withdraw_session` (`DELETE /device_sessions/:id`) is used when `open()` is cancelled before delivery (a transport without it falls back to `stop_session`). Tests in `tests/test_device_amend.py`; the shared envelope fixture is the same file as the TypeScript SDK's.
