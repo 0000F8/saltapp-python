@@ -834,6 +834,12 @@ class DeviceClient:
         "frontmost"}]}``."""
         return await self._expect("list_apps", "apps")
 
+    async def apps_access(self) -> dict[str, Any]:
+        """The apps access list (op ``apps_access``, read-only, grant ``device.apps``): ``{"as_of",
+        "system": {"accessibility", "screen_recording"}, "apps": [{"bundle_id", "app", "group",
+        "status", "actions", ...}]}``, the same data as the device's ``GET /v1/apps/access``."""
+        return await self._expect("apps_access", "apps_access")
+
     async def settings(self) -> dict[str, Any]:
         """Read the computer's settings and power/display state (op ``settings``). Needs a live
         session only: no grant, no ask, works with the screen off and with commands off. Returns

@@ -62,13 +62,13 @@ MUTATING_OPS: tuple[str, ...] = ("click", "type", "key", "scroll", "submit", "fo
 #: Commands an agent sends to a device.
 AGENT_OPS: tuple[str, ...] = (
     "observe", "click", "type", "key", "scroll", "submit", "focus_app", "list_apps",
-    "settings", "read_file", "write_file", "task", "stop", "cancel", "amend", "shell",
+    "apps_access", "settings", "read_file", "write_file", "task", "stop", "cancel", "amend", "shell",
 )
 
 #: Results a device sends back. ``progress`` is NON-final (same ``re`` as its task);
 #: ``task_result`` is the final answer to a ``task``.
 DEVICE_RESULT_OPS: tuple[str, ...] = (
-    "ack", "observation", "apps", "settings", "file", "ask", "error", "ended", "progress", "task_result",
+    "ack", "observation", "apps", "apps_access", "settings", "file", "ask", "error", "ended", "progress", "task_result",
 )
 
 DEVICE_ERROR_CODES: tuple[str, ...] = (
@@ -86,6 +86,7 @@ CAPABILITY_FOR_OP: dict[str, Optional[str]] = {
     "submit": "device.act",
     "focus_app": "device.apps",
     "list_apps": "device.apps",
+    "apps_access": "device.apps",  # read-only, same grant as list_apps
     "settings": None,  # no capability of its own: any active session reads; a set follows the command-approval rule on the device
     "read_file": "device.files.read",
     "write_file": "device.files.write",

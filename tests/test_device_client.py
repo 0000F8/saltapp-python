@@ -300,6 +300,14 @@ def test_the_capability_table_and_op_lists_are_the_shared_ones():
     assert DeviceClient.capability_for_op is CAPABILITY_FOR_OP
     assert "settings" in AGENT_OPS and "settings" in DEVICE_RESULT_OPS
     assert CAPABILITY_FOR_OP["settings"] is None
+    assert "apps_access" in AGENT_OPS and "apps_access" in DEVICE_RESULT_OPS
+    assert CAPABILITY_FOR_OP["apps_access"] == "device.apps"
+
+
+async def test_apps_access_sends_an_empty_read_and_resolves_with_the_list():
+    body = {"as_of": "2026-11-17T00:00:00Z", "system": {"accessibility": {"state": "granted"}, "screen_recording": {"state": "off"}}, "apps": []}
+    r, _ = await run_command(lambda c: c.apps_access(), "apps_access", None, "apps_access", body)
+    assert r == body
 
 
 # ------------------------------------------------------------------ settings
