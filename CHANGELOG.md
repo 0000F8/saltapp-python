@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.24.0 — 2026-11-24
+
+- **Device op `apps_changed`: told when the Apps list changes** (twin of salt-agent-sdk 0.41.0). `DeviceClient.on_apps_changed(fn)` delivers `AppsChangedBody(at, changed)` (epoch ms and bundle ids only; max 50, each cut to 200 chars; never names, icons or usage) for an unsolicited `apps_changed` op from the computer, which sends it only to a session whose grant has `device.apps`. `parse_apps_changed` allow-lists the body; `APPS_CHANGED_MIN_INTERVAL_MS` (1000), `APPS_CHANGED_MAX_PER_MINUTE` (30), `APPS_CHANGED_MAX_IDS`, `APPS_CHANGED_ID_MAX`; `apps_changed` joins `DEVICE_UNSOLICITED_OPS`. `tests/fixtures/device_envelope_vectors.json` is the SDK's regenerated file (adds `apps_changed` vectors and the constants), byte for byte.
+
 ## 0.23.0 — 2026-11-18
 
 - **Device op `apps_access`: which apps the computer lets agents control** (twin of salt-agent-sdk 0.39.0). `DeviceClient.apps_access()` sends a read-only `apps_access` `{}` under the `device.apps` grant and returns the device's list: each app's state (can control, needs the person, never allowed), when it was last checked and which agents used it. `AGENT_OPS`, `DEVICE_RESULT_OPS` and `CAPABILITY_FOR_OP` gain it; a device without the list answers `unsupported`. The shared envelope fixture is the same file as the TypeScript SDK's.

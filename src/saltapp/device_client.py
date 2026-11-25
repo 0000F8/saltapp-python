@@ -49,6 +49,7 @@ from saltapp.device import (
     TASK_TIMEOUT_S_DEFAULT,
     DeviceHeader,
     DeviceProtocolError,
+    AppsChangedBody,
     PointedBody,
     Progress,
     StillBody,
@@ -57,6 +58,7 @@ from saltapp.device import (
     decode_device_message,
     device_message_id,
     encode_device_message,
+    parse_apps_changed,
     parse_pointed,
     parse_progress,
     parse_still,
@@ -288,6 +290,7 @@ class DeviceClient:
         self._state_listeners: list[Callable[[DeviceState], Any]] = []
         self._still_listeners: list[Callable[[StillBody], Any]] = []
         self._pointed_listeners: list[Callable[[PointedBody, str], Any]] = []
+        self._apps_changed_listeners: list[Callable[[AppsChangedBody], Any]] = []
         self._open_future: Optional["asyncio.Future[DeviceSessionMeta]"] = None
         self._open_timer: Any = None
         self._lock = asyncio.Lock()  # single flight: commands run one at a time, in call order
@@ -1047,7 +1050,7 @@ class DeviceClient:
         header, body = decoded.header, decoded.body
         if self._meta is None or not _same_id(header.session, self._meta.id):
             return False
-        # Show Me: the two device-to-agent ops that are not answers to a command.
+        # Show Me: the device-to-agent ops that are not answers to a command.
         if header.op == "still" and header.re is None:
             still = parse_still(body)
             if still is not None:
@@ -1059,6 +1062,12 @@ class DeviceClient:
             if pointed is not None:
                 for cb in list(self._pointed_listeners):
                     _safely(cb, pointed, header.re)
+            return True
+        if header.op == "apps_changed" and header.re is None:
+            change = parse_apps_changed(body)
+            if change is not None:
+                for cb in list(self._apps_changed_listeners):
+                    _safely(cb, change)
             return True
         if header.re is None:
             return False  # a result always answers a command id
@@ -1093,6 +1102,14 @@ class DeviceClient:
         dropped. Returns an unsubscribe."""
         self._still_listeners.append(cb)
         return lambda: self._still_listeners.remove(cb) if cb in self._still_listeners else None
+
+    def on_apps_changed(self, cb: Callable[[AppsChangedBody], Any]) -> Callable[[], None]:
+        """The computer's Apps list changed (op ``apps_changed``, unsolicited, only when the session's
+        grant has ``device.apps``): ``AppsChangedBody(at, changed)``, bundle ids only. Re-read with
+        ``apps_access()`` for the detail. The body is allow-listed (``parse_apps_changed``); a malformed
+        one is dropped. Returns an unsubscribe."""
+        self._apps_changed_listeners.append(cb)
+        return lambda: self._apps_changed_listeners.remove(cb) if cb in self._apps_changed_listeners else None
 
     def on_pointed(self, cb: Callable[[PointedBody, str], Any]) -> Callable[[], None]:
         """Show Me: the computer's answer to a person's point (op ``pointed``). The second argument

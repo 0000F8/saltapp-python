@@ -1139,3 +1139,25 @@ async def test_an_agent_feeds_deliveries_and_lane_messages_to_a_device_client_en
     await feed({"type": "device_session_ended", "event": "ended", "session_id": SESSION, "id": SESSION, "device_id": DEVICE, "end_reason": "stopped_by_person"})
     assert c.session().status == "ended"
     assert ended_by_agent == ["stopped_by_person"]
+
+
+async def test_apps_changed_surfaces_through_on_apps_changed():
+    c, t = await active_client()
+    got = []
+    off = c.on_apps_changed(got.append)
+
+    def boom(change):
+        raise RuntimeError("boom")
+
+    c.on_apps_changed(boom)
+    body = {"at": 9, "changed": ["com.a"], "app": "Safari"}
+    assert c.handle_lane_message(unsolicited("apps_changed", 1, body), DEVICE) is True
+    assert [g.to_dict() for g in got] == [{"at": 9, "changed": ["com.a"]}]
+    assert c.handle_lane_message(unsolicited("apps_changed", 2, {"at": 9, "changed": []}), DEVICE) is True  # consumed, not delivered
+    assert c.handle_lane_message(unsolicited("apps_changed", 3, body, re="r"), DEVICE) is False  # a `re` is not unsolicited
+    assert c.handle_lane_message(unsolicited("apps_changed", 4, body), "person-1") is False  # not the device
+    assert c.handle_lane_message(unsolicited("apps_changed", 5, body, session="other"), DEVICE) is False
+    assert len(got) == 1
+    off()
+    c.handle_lane_message(unsolicited("apps_changed", 6, body), DEVICE)
+    assert len(got) == 1

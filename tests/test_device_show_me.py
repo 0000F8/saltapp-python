@@ -15,7 +15,7 @@ POINTED = {
 
 
 def test_the_show_me_constants_and_ops_match_the_typescript_ones():
-    assert dev.DEVICE_UNSOLICITED_OPS == ("still", "pointed")
+    assert dev.DEVICE_UNSOLICITED_OPS == ("still", "pointed", "apps_changed")
     assert dev.STILL_MIN_INTERVAL_MS == 2_000 and dev.STILL_MAX_PER_MINUTE == 30
     assert dev.POINT_WORDS_MAX == 200 and dev.POINT_ID_MAX == 64 and dev.POINTED_NAME_MAX == 200
     assert dev.POINTED_REFUSALS == ("forbidden_app", "secure_field", "stale", "not_allowed")

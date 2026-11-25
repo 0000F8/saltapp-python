@@ -37,6 +37,7 @@ def test_fixture_is_well_formed():
     assert len(FIXTURE["task_args"]) >= 15
     assert len(FIXTURE["progress"]) >= 10
     assert len(FIXTURE["task_result"]) >= 10
+    assert len(FIXTURE["apps_changed"]) >= 10
 
 
 def test_constants_match_the_ones_the_fixture_was_written_with():
@@ -225,3 +226,9 @@ def test_settings_op_is_known_needs_no_capability_and_answers_settings():
     assert "settings" in dev.AGENT_OPS and "settings" in dev.DEVICE_RESULT_OPS
     assert dev.CAPABILITY_FOR_OP["settings"] is None
     assert dev.SETTING_REFUSAL_REASONS == ("unknown_setting", "bad_value", "declined")
+
+
+@pytest.mark.parametrize("v", FIXTURE["apps_changed"], ids=lambda v: v["name"])
+def test_apps_changed_vectors(v):
+    got = dev.parse_apps_changed(v["input"])
+    assert (got.to_dict() if got is not None else None) == v["expect"]

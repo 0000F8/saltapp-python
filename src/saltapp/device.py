@@ -699,7 +699,7 @@ def parse_task_result(
 
 #: Device-to-agent ops that are not answers to a command. Kept out of ``DEVICE_RESULT_OPS``
 #: on purpose: that list is pinned by the envelope-vector fixture shared with salt-agent-sdk.
-DEVICE_UNSOLICITED_OPS: tuple[str, ...] = ("still", "pointed")
+DEVICE_UNSOLICITED_OPS: tuple[str, ...] = ("still", "pointed", "apps_changed")
 
 #: The device posts at most one still every 2 s, and at most 30 a minute per lane.
 STILL_MIN_INTERVAL_MS = 2_000
@@ -709,6 +709,13 @@ POINT_WORDS_MAX = 200
 #: Longest id a ``SALT-POINT`` header field may carry (help id, obs id, point id).
 POINT_ID_MAX = 64
 POINTED_NAME_MAX = 200
+
+#: ``apps_changed`` (the Apps list changed, sent to a session whose grant has ``device.apps``): at
+#: most one a second and 30 a minute; a burst coalesces into one message. Ids only.
+APPS_CHANGED_MIN_INTERVAL_MS = 1_000
+APPS_CHANGED_MAX_PER_MINUTE = 30
+APPS_CHANGED_MAX_IDS = 50
+APPS_CHANGED_ID_MAX = 200
 
 POINTED_REFUSALS: tuple[str, ...] = ("forbidden_app", "secure_field", "stale", "not_allowed")
 
@@ -758,6 +765,39 @@ def parse_still(raw: Any) -> Optional[StillBody]:
         help_id=help_id, obs=obs, width=w, height=h, scale=scale, format=fmt, image_b64=image,
         taken_at=taken if isinstance(taken, str) else "",
     )
+
+
+@dataclass(frozen=True)
+class AppsChangedBody:
+    """The computer's Apps list changed: when (epoch ms) and which bundle ids. Ids and the kind of
+    change only, never app names, icons or usage; re-read ``apps_access`` for the detail."""
+
+    at: int
+    changed: tuple[str, ...]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"at": self.at, "changed": list(self.changed)}
+
+
+def parse_apps_changed(raw: Any) -> Optional[AppsChangedBody]:
+    """An ``apps_changed`` body, allow-listed: ``at`` a non-negative whole number, ``changed`` a list
+    whose strings are kept (non-strings and empties dropped, each cut to 200 characters, repeats
+    removed, first 50 kept). ``None`` when it is not one or no id is left. Extra fields are dropped."""
+    if not isinstance(raw, Mapping):
+        return None
+    at = _whole(raw.get("at"))
+    changed = raw.get("changed")
+    if at is None or at < 0 or not isinstance(changed, list):
+        return None
+    seen: dict[str, None] = {}
+    for v in changed:
+        if len(seen) >= APPS_CHANGED_MAX_IDS:
+            break
+        if isinstance(v, str) and v:
+            seen.setdefault(_clip(v, APPS_CHANGED_ID_MAX), None)
+    if not seen:
+        return None
+    return AppsChangedBody(at=at, changed=tuple(seen))
 
 
 @dataclass(frozen=True)

@@ -55,6 +55,7 @@ const envelopes = [
       duration_ms: 8420,
     },
   ],
+  ["apps_changed: unsolicited, ids only, no re", hdr({ op: "apps_changed", id: "01J9ZQ3M8K6666666666666666", seq: 12 }), { at: 1760000012345, changed: ["com.apple.Safari", "org.mozilla.firefox"] }],
   ["error: refusal with a reason", hdr({ op: "error", id: "01J9ZQ3M8K4444444444444444", seq: 5, re: "01J9ZQ3M8K0000000000000000" }), { code: "out_of_scope", message: "action budget spent" }],
   ["ended: the session is over", hdr({ op: "ended", id: "01J9ZQ3M8K5555555555555555", seq: 11 }), { reason: "stopped_by_agent" }],
   [
@@ -169,6 +170,28 @@ const resultIn = [
   ["whole numbers: 2.0 is whole, 2.5 is not", { task_id: "t_00000000000a", status: "done", summary: "s", checked: null, steps: [], commands: 2.0, duration_ms: 2.5 }],
 ].map(([name, input]) => ({ name, input, expect: sdk.normalizeTaskResult(input) }));
 
+// ---- apps_changed body ----------------------------------------------------------
+const manyIds = Array.from({ length: 80 }, (_, i) => "id." + i);
+const appsChangedIn = [
+  ["a clean body passes through", { at: 1760000012345, changed: ["com.apple.Safari", "org.mozilla.firefox"] }],
+  ["extra fields never travel (names, icons, usage)", { at: 5, changed: ["com.a"], app: "Safari", icon_b64: "AAAA", used_by: ["salt"] }],
+  ["non-strings and empty strings are dropped, repeats removed, order kept", { at: 5, changed: ["b", "a", "b", "", 7, null, "a", "c"] }],
+  ["each id is cut to 200 characters", { at: 5, changed: [rep("x", 500)] }],
+  ["caps count characters: emoji are cut by code point", { at: 5, changed: [rep("😀", 300)] }],
+  ["80 ids keep the first 50", { at: 1, changed: manyIds }],
+  ["at 0 is allowed", { at: 0, changed: ["a"] }],
+  ["at must be a whole number", { at: 1.5, changed: ["a"] }],
+  ["at must not be negative", { at: -1, changed: ["a"] }],
+  ["at as a string is refused", { at: "5", changed: ["a"] }],
+  ["no at", { changed: ["a"] }],
+  ["changed must be an array", { at: 1, changed: "a" }],
+  ["an empty list is refused", { at: 1, changed: [] }],
+  ["a list with no usable id is refused", { at: 1, changed: ["", 3, null] }],
+  ["not an object", "apps_changed"],
+  ["an array", [1, 2]],
+  ["null", null],
+].map(([name, input]) => ({ name, input, expect: sdk.normalizeAppsChanged(input) }));
+
 const out = {
   generated_by: "scripts/generate_device_vectors.cjs (saltapp-python), from salt-agent-sdk src/device/protocol.ts",
   note: "Committed identically in salt-agent-sdk and saltapp-python. Do not edit by hand: regenerate.",
@@ -178,6 +201,7 @@ const out = {
   task_args: taskArgsIn,
   progress: progressIn,
   task_result: resultIn,
+  apps_changed: appsChangedIn,
   constants: {
     DEVICE_PROTOCOL_VERSION: sdk.DEVICE_PROTOCOL_VERSION,
     MAX_DEVICE_PLAINTEXT_BYTES: sdk.MAX_DEVICE_PLAINTEXT_BYTES,
@@ -210,9 +234,14 @@ const out = {
     TASK_CLIENT_GRACE_MS: sdk.TASK_CLIENT_GRACE_MS,
     TASK_STATUSES: [...sdk.TASK_STATUSES],
     TASK_STEP_KINDS: [...sdk.TASK_STEP_KINDS],
+    DEVICE_UNSOLICITED_OPS: [...sdk.DEVICE_UNSOLICITED_OPS],
+    APPS_CHANGED_MIN_INTERVAL_MS: sdk.APPS_CHANGED_MIN_INTERVAL_MS,
+    APPS_CHANGED_MAX_PER_MINUTE: sdk.APPS_CHANGED_MAX_PER_MINUTE,
+    APPS_CHANGED_MAX_IDS: sdk.APPS_CHANGED_MAX_IDS,
+    APPS_CHANGED_ID_MAX: sdk.APPS_CHANGED_ID_MAX,
   },
 };
 
 const dest = path.join(__dirname, "..", "tests", "fixtures", "device_envelope_vectors.json");
 fs.writeFileSync(dest, JSON.stringify(out, null, 2) + "\n");
-console.log(`wrote ${dest}: ${envelopes.length} envelopes, ${decodeOnly.length} decode-only, ${taskArgsIn.length} task args, ${progressIn.length} progress, ${resultIn.length} task results`);
+console.log(`wrote ${dest}: ${envelopes.length} envelopes, ${decodeOnly.length} decode-only, ${taskArgsIn.length} task args, ${progressIn.length} progress, ${resultIn.length} task results, ${appsChangedIn.length} apps_changed`);
