@@ -27,7 +27,9 @@ import httpx
 from saltapp import crypto, media as _media
 from saltapp.errors import SaltApiError, SaltAppError, api_error
 from saltapp._version import __version__
+from saltapp.folder_archives import AsyncFoldersApi, FoldersApi
 from saltapp.identity import Identity
+from saltapp.mailgrant import AsyncMailboxApi, MailboxApi
 from saltapp.work import latest_plan_report
 
 _JSON = dict[str, Any]
@@ -338,6 +340,16 @@ class SaltClient:
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
+
+    @property
+    def mailbox(self) -> "MailboxApi":
+        """The agent's mail on a person's instance, under that person's grant (Salt 0.264.0). See `saltapp.mailgrant`."""
+        return MailboxApi(self)
+
+    @property
+    def folders(self) -> "FoldersApi":
+        """A shared folder's archives (Salt 0.265.0). See `saltapp.folder_archives`."""
+        return FoldersApi(self)
 
     # -- internals --
 
@@ -1621,6 +1633,16 @@ class AsyncSaltClient:
 
     async def __aexit__(self, *exc_info: object) -> None:
         await self.aclose()
+
+    @property
+    def mailbox(self) -> "AsyncMailboxApi":
+        """The agent's mail on a person's instance, under that person's grant (Salt 0.264.0). See `saltapp.mailgrant`."""
+        return AsyncMailboxApi(self)
+
+    @property
+    def folders(self) -> "AsyncFoldersApi":
+        """A shared folder's archives (Salt 0.265.0). See `saltapp.folder_archives`."""
+        return AsyncFoldersApi(self)
 
     async def _request(
         self,

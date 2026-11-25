@@ -21,7 +21,9 @@ from saltapp.chat_privacy import is_private_chat
 from saltapp.device import DeviceProtocolError
 from saltapp.device_client import DeviceClient, DevicePausedError, DeviceSessionLiveError, HttpDeviceTransport
 from saltapp.errors import ApproveFirstError, GoalPlanError, PlanRequiredError, RecipientContactsOnlyError, SaltApiError, SaltAppError, StaleRulesError, RULE_ERROR_CODES
+from saltapp.folder_archives import FolderArchiveError
 from saltapp.identity import Identity
+from saltapp.mailgrant import MailApprovalCancelled, MailApprovalTimeout, MailGrantError, MailRowError, as_mail_grant_error, is_mail_asked, open_mail_row
 from saltapp.register import RegisteredAgent, register_agent, register_agent_async
 from saltapp.script_job import FileSeenStore, MemorySeenStore, ScriptJobResult, SeenStore, run_script_job
 
@@ -37,7 +39,15 @@ __all__ = [
     "DeviceSessionLiveError",
     "HttpDeviceTransport",
     "FileSeenStore",
+    "FolderArchiveError",
     "GoalPlanError",
+    "MailApprovalCancelled",
+    "MailApprovalTimeout",
+    "MailGrantError",
+    "MailRowError",
+    "as_mail_grant_error",
+    "is_mail_asked",
+    "open_mail_row",
     "Identity",
     "MemorySeenStore",
     "PlanRequiredError",

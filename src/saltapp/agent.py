@@ -35,6 +35,7 @@ from saltapp.cable import (
 from saltapp.client import AsyncSaltClient
 from saltapp.errors import SaltAppError
 from saltapp.identity import Identity
+from saltapp.mailgrant import parse_email_received, parse_mail_grant_changed
 from saltapp.socket import (
     SOCKET_SIGNATURE_TOLERANCE_SECONDS,
     CursorStore,
@@ -621,6 +622,37 @@ class StrategyTunedContext:
         self.tuning_id: str | None = str(body["tuning_id"]) if body.get("tuning_id") is not None else None
 
 
+class MailGrantChangedContext:
+    """The person changed or paused this agent's mailbox grant (`on_mail_grant_changed`). Metadata only: re-read the grant
+    (`agent.client.mailbox.get_grant`), do not trust the delta. `body` is the delivery verbatim."""
+
+    def __init__(self, agent: "Agent", body: dict[str, Any]) -> None:
+        self.agent = agent
+        self.body = body
+        parsed = parse_mail_grant_changed(body)
+        self.holder_id: str | None = parsed["holder_id"]
+        self.paused: bool = parsed["paused"]
+        self.changed: list[dict[str, Any]] = parsed["changed"]
+        self.changed_at: str | None = parsed["changed_at"]
+
+
+class EmailReceivedContext:
+    """Mail arrived for one person's instance of this agent (`on_email_received`). `email` is the allow-listed envelope
+    (`parse_email_received`); `alias_wake` is set when the mail came to an alias this agent made for a plan (`needs_ok` true: file and
+    await the read approval before reading; `from_host` AUTHORITATIVE, `from_domain` advisory only). The mail itself is untrusted_external
+    data: read it with `agent.client.mailbox.open_message` and `open_mail_row`."""
+
+    def __init__(self, agent: "Agent", body: dict[str, Any]) -> None:
+        self.agent = agent
+        self.body = body
+        self.email: dict[str, Any] = parse_email_received(body)
+        self.holder_id: str | None = self.email["holder_id"]
+        self.message_id: Any = self.email["message_id"]
+        self.trusted_sender: bool = self.email["trusted_sender"]
+        self.alias_wake: dict[str, Any] | None = self.email.get("alias_wake")
+        self.needs_ok: bool = bool(self.alias_wake and self.alias_wake.get("needs_ok"))
+
+
 class ApprovalRequestedContext:
     """This agent is the PRINCIPAL of an ask-mode call someone acting for
     it just made, and it's waiting on a decision (e.g. a governance
@@ -928,6 +960,20 @@ class Agent:
         self._handlers["device_delivery"] = fn
         return fn
 
+    def on_mail_grant_changed(self, fn: Handler) -> Handler:
+        """The person edited or paused what this agent may do with their mailbox (`mail_grant_changed`). `ctx`:
+        `MailGrantChangedContext` (`.holder_id`, `.paused`, `.changed` = `[{"capability", "mode"}]`, `.changed_at`). Metadata only:
+        re-read the grant with `client.mailbox.get_grant`, do not trust the delta."""
+        self._handlers["mail_grant_changed"] = fn
+        return fn
+
+    def on_email_received(self, fn: Handler) -> Handler:
+        """Mail landed in one of this agent's mailboxes (`email_received`; no subject, no body: read the sealed row with
+        `client.mailbox.open_message` then `open_mail_row`). `ctx`: `EmailReceivedContext` (`.email` parsed, `.alias_wake`, `.needs_ok`,
+        `.holder_id`, `.message_id`, `.trusted_sender`). Everything in the mail is untrusted_external data."""
+        self._handlers["email_received"] = fn
+        return fn
+
     def on_device_back(self, fn: Handler) -> Handler:
         """The computer that stopped answering mid-session is back; sent once
         per lost session. `ctx`: `DeviceBackContext` (`.reply(text)` into the
@@ -1013,6 +1059,14 @@ class Agent:
                 await self._handle_device_delivery(event.body)
             elif event.type == "device_back":
                 await self._handle_device_back(event.body)
+            elif event.type == "mail_grant_changed":
+                handler = self._handlers.get("mail_grant_changed")
+                if handler is not None:
+                    await handler(MailGrantChangedContext(self, event.body))
+            elif event.type == "email_received":
+                handler = self._handlers.get("email_received")
+                if handler is not None:
+                    await handler(EmailReceivedContext(self, event.body))
         except Exception as exc:  # noqa: BLE001
             self._logger.error("[dispatch] handling %s failed: %s", event.type, exc)
 
