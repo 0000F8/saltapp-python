@@ -1282,6 +1282,9 @@ class Agent:
     async def _handle_approval_decided(self, body: dict[str, Any]) -> None:
         handler = self._handlers.get("approval_decided")
         exercise = body.get("exercise")
+        # salt-api delivers the decided exercise FLAT ({type, id, capability, decision, ...}); an older shape nests it under "exercise".
+        if not isinstance(exercise, dict) and isinstance(body.get("capability"), str):
+            exercise = body
         if not isinstance(exercise, dict):
             return
         grant_handler = self._handlers.get("grant_decided")

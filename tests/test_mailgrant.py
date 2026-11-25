@@ -389,3 +389,20 @@ def test_events_without_handlers_are_dropped_quietly():
         await agent.dispatch(Event(type="mail_grant_changed", body={"type": "mail_grant_changed"}))
 
     asyncio.run(run())
+
+
+async def test_approval_decided_flat_body_reaches_the_handler():
+    # salt-api sends the decided exercise flat (MandateEventJob), with performed and reason on a mail approval.
+    client = async_client(lambda request: httpx.Response(200, json={}))
+    agent = Agent(host=HOST, api_key="k", public_key="pub", private_key="priv", agent_id="self-agent", client=client)
+    seen = []
+
+    @agent.on_approval_decided
+    async def on_decided(ctx):
+        seen.append(ctx)
+
+    flat = {"type": "approval_decided", "id": "ex1", "approval_id": "ap1", "capability": "mail.allow", "decision": "approved", "performed": False, "reason": "sender_gone"}
+    await agent.dispatch(Event(type="approval_decided", body=flat))
+    assert len(seen) == 1
+    assert seen[0].approved is True
+    assert seen[0].exercise["performed"] is False and seen[0].exercise["reason"] == "sender_gone"
